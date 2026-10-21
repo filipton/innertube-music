@@ -83,4 +83,5 @@ visitor ids and addresses removed or replaced. The `fixtures` feature exposes th
 
 ## License
 
-MIT
+Copyright (c) 2026 filipton. AGPL-3.0-or-later: you may use, change and sell it, but whatever ships or serves it
+over a network must publish its source under the same license.
