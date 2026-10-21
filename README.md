@@ -73,7 +73,8 @@ until `auth::signed_in_at(address, cookies)`, take them, and clear the view's co
 ## Status
 
 Best effort. This is not an official API; YouTube changes either client without notice, and unofficial
-clients are against YouTube's terms of service. Age-restricted videos do not play through visionOS.
+clients are against YouTube's terms of service. Age-restricted videos do not play through visionOS, signed in or not: it refuses signed-in requests,
+and the clients that take them serve ciphered URLs that only YouTube's JavaScript can open.
 
 ## Tests
 
