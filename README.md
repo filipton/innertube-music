@@ -60,7 +60,10 @@ Google rotates such a session's cookies, and stops honoring one nobody rotates. 
 - after every call, store `take_changed()` when it returns new cookies (they come in rotations' and
   answers' `Set-Cookie`, so your `Http` should fill `Response::set_cookies`);
 - treat only `Error::SignedOut` as the end of the session. A refused answer is retried once after a
-  rotation inside the crate; network errors leave the session as it was.
+  rotation inside the crate. Refused again after a rotation Google accepted, the call is `SignedOut`,
+  and `cookies()` still holds the rotated cookies, to keep for a later look. When the cookies could not
+  be rotated (too soon, or an error status) it is `Error::Refused` and the session stands; network errors
+  leave it as it was too.
 
 The cookies should come from a private window that is closed right after: a browser that keeps the
 session open keeps rotating it, and its copy and yours undo each other. An app can sign in in a web
@@ -75,7 +78,8 @@ clients are against YouTube's terms of service. Age-restricted videos do not pla
 ## Tests
 
 `cargo test`. The fixtures in `tests/fixtures` are trimmed real answers, with tracking, session data,
-visitor ids and addresses removed or replaced.
+visitor ids and addresses removed or replaced. The `fixtures` feature exposes their folder as
+`innertube_music::FIXTURES`, for a dependent's own tests.
 
 ## License
 

@@ -6,9 +6,13 @@ rust-version = "1.85"
 license = "MIT"
 description = "YouTube Music over InnerTube without JavaScript: requests and parsers for search, browse, the home feed, a signed-in library and audio streams, with no HTTP client of its own"
 readme = "README.md"
-exclude = ["BUILD.bazel"]
+repository = "https://github.com/norifm/innertube-music"
 keywords = ["youtube-music", "innertube", "music"]
 categories = ["api-bindings", "multimedia::audio"]
+
+[features]
+# `FIXTURES`: the folder of trimmed real answers the tests parse, for a dependent's own tests.
+fixtures = []
 
 [dependencies]
 serde_json = "1"

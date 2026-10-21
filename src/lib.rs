@@ -25,6 +25,10 @@ pub use auth::Cookies;
 pub use parse::{thumbnail_url, Album, AlbumLink, AlbumPage, Artist, ArtistLink, ArtistPage, Item, Playlist, PlaylistPage, SearchResults, Shelf, Song};
 pub use player::{pick, Format, Stream, PART};
 
+/// The folder of trimmed real answers this crate's tests parse (`tests/fixtures`), for a dependent's tests.
+#[cfg(feature = "fixtures")]
+pub const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+
 /// One HTTP request: a POST of `body` as `application/json` when it is set, a GET otherwise.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
