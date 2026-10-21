@@ -70,8 +70,11 @@ pub enum Error<E> {
     /// YouTube will not play the video; its reason.
     Unplayable(String),
     /// The call needs an account and there is none, or YouTube ended the session (its cookies were
-    /// refused after a rotation): sign in again.
+    /// refused right after a rotation it accepted): sign in again.
     SignedOut,
+    /// Answered as to a visitor while the cookies could not be rotated (too soon, or an error status):
+    /// the session stands, and the next call tries again.
+    Refused,
 }
 
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
@@ -354,7 +357,8 @@ impl InnerTube {
     }
 
     /// [`InnerTube::call_once`]; signed in, an answer refused (401) or given as to a visitor is asked once
-    /// more after the cookies are rotated. Refused again, the session has ended.
+    /// more after the cookies are rotated. Refused again after a rotation YouTube accepted, the session
+    /// has ended; its cookies stay for the caller to keep.
     async fn call<H: Http + Sync>(&self, client: &Client, http: &H, endpoint: &str, fields: Value) -> Result<Value, H::Error> {
         let signed = client.signs_in && self.cookies().is_some();
         let refused = |r: &Result<Value, H::Error>| matches!(r, Err(Error::Status(401))) || matches!(r, Ok(v) if parse::logged_out(v));
@@ -362,10 +366,13 @@ impl InnerTube {
         if !signed || !refused(&first) {
             return first;
         }
-        self.rotate(http).await?;
+        match self.rotate(http).await {
+            Ok(Rotated::Fresh) => {}
+            Ok(Rotated::TooSoon) | Err(Error::Status(_)) => return Err(Error::Refused),
+            Err(e) => return Err(e),
+        }
         let again = self.call_once(client, http, endpoint, fields).await;
         if refused(&again) {
-            self.set_cookies(None);
             return Err(Error::SignedOut);
         }
         again
@@ -1053,7 +1060,8 @@ pub(crate) mod tests {
     }
 
     /// A signed-in answer given as to a visitor is asked again after a rotation; given so again, the
-    /// session has ended. A network failure is only that.
+    /// session has ended, its rotated cookies kept. Without a rotation it is only refused, and a network
+    /// failure is only that.
     #[test]
     fn a_refused_answer_rotates_and_asks_once_more() {
         let yt = signed_in();
@@ -1062,9 +1070,17 @@ pub(crate) mod tests {
         assert_eq!(fake.asked().iter().map(|r| r.url.as_str()).collect::<Vec<_>>()[1], ROTATE_URL);
         assert!(fake.asked()[2].header("Cookie").unwrap().contains("ts2"), "asked again with the fresh cookies");
 
-        let fake = Fake::with(vec![status(401, &[]), status(200, &[]), ok("signed_out")]);
+        let fake = Fake::with(vec![status(401, &[]), status(200, &["__Secure-1PSIDTS=ts3"]), ok("signed_out")]);
         assert_eq!(ready(yt.library_albums(&fake)), Err(Error::SignedOut));
-        assert_eq!(yt.cookies(), None);
+        assert_eq!(yt.cookies().unwrap().get("__Secure-1PSIDTS"), Some("ts3"));
+
+        for rotation in [status(429, &[]), status(503, &[])] {
+            let yt = signed_in();
+            let fake = Fake::with(vec![ok("signed_out"), rotation]);
+            assert_eq!(ready(yt.library_albums(&fake)), Err(Error::Refused));
+            assert_eq!(fake.asked().len(), 2, "not asked again unrotated");
+            assert!(yt.cookies().is_some());
+        }
 
         let yt = signed_in();
         let fake = Fake::default();
