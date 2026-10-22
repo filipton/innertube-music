@@ -512,13 +512,7 @@ pub(crate) fn artist(v: &Value, id: &str) -> ArtistPage {
         } else if let Some(shelf) = s.get("musicCarouselShelfRenderer") {
             for item in shelf.get("contents").and_then(Value::as_array).into_iter().flatten().filter_map(|c| c.get("musicTwoRowItemRenderer")).filter_map(card) {
                 match item {
-                    Item::Album(mut a) if !page.albums.iter().any(|b| b.id == a.id) => {
-                        if a.artist.is_empty() {
-                            a.artist = page.artist.name.clone();
-                            a.artists = vec![ArtistLink { id: page.artist.id.clone(), name: page.artist.name.clone() }];
-                        }
-                        page.albums.push(a);
-                    }
+                    Item::Album(a) if !page.albums.iter().any(|b| b.id == a.id) => page.albums.push(credited_to(a, &page.artist)),
                     Item::Artist(a) => page.similar.push(a),
                     Item::Song(s) if !videos.iter().any(|v| v.video_id == s.video_id) => videos.push(s),
                     _ => {}
@@ -533,6 +527,15 @@ pub(crate) fn artist(v: &Value, id: &str) -> ArtistPage {
     }
     by(&page.artist, &mut page.top_songs);
     page
+}
+
+/// `album`, by `artist` where it names no one.
+fn credited_to(mut album: Album, artist: &Artist) -> Album {
+    if album.artist.is_empty() {
+        album.artist = artist.name.clone();
+        album.artists = vec![ArtistLink { id: artist.id.clone(), name: artist.name.clone() }];
+    }
+    album
 }
 
 /// Gives `songs` without artists of their own `artist`.
@@ -564,13 +567,42 @@ pub(crate) fn all_videos(v: &Value) -> Option<Value> {
 /// A channel's videos, as the answer to [`all_videos`]' request lists them, by `artist` where they
 /// name no one.
 pub(crate) fn channel_videos(v: &Value, artist: &Artist) -> Vec<Song> {
-    let grid = sections(v, ARTIST_SHELVES).find_map(|s| s.pointer("/gridRenderer/items")).and_then(Value::as_array);
-    let mut songs: Vec<Song> = grid.into_iter().flatten().filter_map(|i| i.get("musicTwoRowItemRenderer")).filter_map(card).filter_map(|i| match i {
+    let mut songs: Vec<Song> = grid(v).filter_map(|i| match i {
         Item::Song(s) => Some(s),
         _ => None,
     }).collect();
     by(artist, &mut songs);
     songs
+}
+
+/// The `browse` request bodies listing all of an artist's releases where its page (`v`) shows the first
+/// of them: the More of its albums' and its singles' shelves (`MPAD...`).
+pub(crate) fn all_releases(v: &Value) -> Vec<Value> {
+    sections(v, ARTIST_SHELVES)
+        .filter_map(|s| s.pointer("/musicCarouselShelfRenderer/header/musicCarouselShelfBasicHeaderRenderer/moreContentButton/buttonRenderer/navigationEndpoint/browseEndpoint"))
+        .filter(|b| b.get("browseId").and_then(Value::as_str).is_some_and(|id| id.starts_with("MPAD")))
+        .map(|b| {
+            let mut body = serde_json::json!({ "browseId": b["browseId"] });
+            if let Some(params) = b.get("params") {
+                body["params"] = params.clone();
+            }
+            body
+        })
+        .collect()
+}
+
+/// The releases an answer to one of [`all_releases`]' requests lists, by `artist` where they name no one.
+pub(crate) fn releases(v: &Value, artist: &Artist) -> Vec<Album> {
+    grid(v).filter_map(|i| match i {
+        Item::Album(a) => Some(credited_to(a, artist)),
+        _ => None,
+    }).collect()
+}
+
+/// The cards of a page that is one grid (a More's answer).
+fn grid(v: &Value) -> impl Iterator<Item = Item> + '_ {
+    let items = sections(v, ARTIST_SHELVES).find_map(|s| s.pointer("/gridRenderer/items")).and_then(Value::as_array);
+    items.into_iter().flatten().filter_map(|i| i.get("musicTwoRowItemRenderer")).filter_map(card)
 }
 
 /// A playlist page (`browse` of `VL...`, which is `id`).

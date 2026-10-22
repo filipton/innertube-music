@@ -475,12 +475,22 @@ impl InnerTube {
         Ok(page)
     }
 
-    /// Artist `id` (`UC...`): albums, top songs with their lengths, similar artists, description. A
-    /// channel without top songs (a profile's) lists all its videos instead, asked for with one more
-    /// request; unanswered, the first few its page shows.
+    /// Artist `id` (`UC...`): all its albums and singles (its shelves' More, asked side by side;
+    /// unanswered, the first ten its page shows), top songs with their lengths, similar artists,
+    /// description. A channel without top songs (a profile's) lists all its videos instead, asked for
+    /// with one more request; unanswered, the first few its page shows.
     pub async fn artist<H: Http + Sync>(&self, http: &H, id: &str) -> Result<ArtistPage, H::Error> {
         let v = self.browse(http, id).await?;
         let mut page = parse::artist(&v, id);
+        let more = parse::all_releases(&v);
+        let lists = join_all(more.into_iter().map(|body| self.call(&WEB_REMIX, http, "browse", body)).collect()).await;
+        let mut releases: Vec<Album> = lists.into_iter().filter_map(Result::ok).flat_map(|l| parse::releases(&l, &page.artist)).collect();
+        if !releases.is_empty() {
+            releases.extend(std::mem::take(&mut page.albums));
+            let mut seen = std::collections::HashSet::new();
+            releases.retain(|a| seen.insert(a.id.clone()));
+            page.albums = releases;
+        }
         if let Some(more) = parse::all_videos(&v) {
             if let Ok(all) = self.call(&WEB_REMIX, http, "browse", more).await {
                 let videos = parse::channel_videos(&all, &page.artist);
@@ -902,9 +912,44 @@ pub(crate) mod tests {
         assert!(asked[2].url.contains("music/get_queue"), "{}", asked[2].url);
         assert_eq!(body(&asked[2])["videoIds"].as_array().map(Vec::len), Some(4));
 
-        let fake = Fake::answering(&[(200, &fixture("artist")), (200, &fixture("queue"))]);
+        let fake = Fake::answering(&[(200, &fixture("artist")), (200, "{}"), (200, &fixture("queue"))]);
         ready(InnerTube::default().artist(&fake, "UCRr1xG_2WIDs18a6cIiCxeA")).unwrap();
-        assert!(fake.asked().iter().all(|r| body(r).get("params").is_none()));
+        assert!(fake.asked().iter().all(|r| body(r)["browseId"].as_str().is_none_or(|id| id.starts_with("MPAD") || id == "UCRr1xG_2WIDs18a6cIiCxeA")), "no videos asked");
+    }
+
+    /// An artist's page shows the first of its albums and singles; their shelves' More lists them all,
+    /// which lead the page's, each once.
+    #[test]
+    fn an_artist_page_lists_every_release() {
+        // The fixture's More links as YouTube sends them now, with the params that pick albums or singles.
+        fn with_params(v: &mut Value) {
+            match v {
+                Value::Object(o) => {
+                    if o.get("browseId").and_then(Value::as_str).is_some_and(|id| id.starts_with("MPAD")) {
+                        o.insert("params".into(), "albums".into());
+                    }
+                    o.values_mut().for_each(with_params);
+                }
+                Value::Array(a) => a.iter_mut().for_each(with_params),
+                _ => {}
+            }
+        }
+        let mut page: Value = serde_json::from_str(&fixture("artist")).unwrap();
+        with_params(&mut page);
+        let page = page.to_string();
+        let fake = Fake::answering(&[(200, &page), (200, &fixture("artist_albums")), (200, "{}"), (200, &fixture("queue"))]);
+        let found = ready(InnerTube::default().artist(&fake, "UCRr1xG_2WIDs18a6cIiCxeA")).unwrap();
+        let asked = fake.asked();
+        assert_eq!((body(&asked[1])["browseId"].as_str(), body(&asked[1])["params"].as_str()), (Some("MPADUCRr1xG_2WIDs18a6cIiCxeA"), Some("albums")));
+        let titles: Vec<&str> = found.albums.iter().take(3).map(|a| a.title.as_str()).collect();
+        assert_eq!(titles, ["From Zero", "From Zero: A Cappellas + Instrumentals", "From Zero: A Cappellas"]);
+        assert_eq!((found.albums[0].release_type.as_deref(), found.albums[0].year), (Some("Album"), 2024));
+        assert_eq!(found.albums[0].artist, found.artist.name, "the page's artist where the list names no one");
+        assert!(found.albums.len() > 3, "the page's own after");
+        let mut ids: Vec<&str> = found.albums.iter().map(|a| a.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), found.albums.len(), "each once");
     }
 
     #[test]
