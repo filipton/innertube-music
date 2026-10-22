@@ -433,17 +433,18 @@ impl InnerTube {
         // YouTube Music's songs lead, in the whole search's order; music videos and uploads follow, still found.
         let mut songs = merged(all.songs, s.songs, |s| &s.video_id);
         songs.sort_by_key(|x| x.video);
-        // Every artist and profile a found song credits is found too: those named as the query, give or
-        // take a typo, lead; YouTube's own list misses them when the query is misspelled, and never lists
-        // a profile that only uploads videos.
-        let (named, others): (Vec<Artist>, Vec<Artist>) = credited(&songs).into_iter().partition(|a| close(query, &a.name));
-        let leading = named.len();
-        let mut artists = merged(named, merged(all.artists, ar.artists, |a| &a.id), |a| &a.id);
+        // YouTube's artists in its order, then every artist and profile a found song credits: YouTube's
+        // list misses them when the query is misspelled, and never lists a profile that only uploads
+        // videos. Those the first song credits or named as the query, give or take a typo, come first of
+        // these, with their pages' pictures.
+        let mut artists = merged(all.artists, ar.artists, |a| &a.id);
+        let first: Vec<String> = songs.first().map(|s| s.artists.iter().map(|a| a.id.clone()).collect()).unwrap_or_default();
+        let unlisted = credited(&songs).into_iter().filter(|a| !artists.iter().any(|b| b.id == a.id));
+        let (mut pictured, others): (Vec<Artist>, Vec<Artist>) = unlisted.partition(|a| first.contains(&a.id) || close(query, &a.name));
         self.fill_lengths(http, songs.iter_mut()).await;
-        self.fill_pictures(http, &mut artists[..leading]).await;
+        self.fill_pictures(http, &mut pictured).await;
+        artists.extend(pictured);
         artists.extend(others);
-        let mut seen = std::collections::HashSet::new();
-        artists.retain(|a| seen.insert(a.id.clone()));
         Ok(SearchResults { songs, albums: merged(all.albums, al.albums, |a| &a.id), artists, playlists: all.playlists })
     }
 
@@ -970,20 +971,22 @@ pub(crate) mod tests {
         }
     }
 
-    /// A misspelled query finds the artist and the profile its songs credit, with their pictures, ahead
-    /// of YouTube's own artists, and the rest of the songs' artists after them.
+    /// A misspelled query finds the artist and the profile its songs credit, with their pictures, after
+    /// YouTube's own artists in its order, and the rest of the songs' artists after them.
     #[test]
     fn a_search_finds_the_artists_its_songs_credit() {
         let pages = [fixture("artist"), fixture("artist_channel")];
         let fake = Fake::answering(&[(200, &fixture("search_typo_all")), (200, &fixture("search_typo_songs")), (200, "{}"), (200, &fixture("search_typo_artists")), (200, &fixture("queue")), (200, &pages[0]), (200, &pages[1])]);
         let found = ready(InnerTube::default().search(&fake, "Mahpra")).unwrap();
         let artists: Vec<(&str, &str)> = found.artists.iter().map(|a| (a.name.as_str(), a.id.as_str())).collect();
-        assert_eq!(&artists[..4], [("Maphra", "UCDRpiXyw9PHsm_YS0wOqRcQ"), ("MAPHRA", "UCaUbhZHASlYW9TlrKt1rLYg"), ("Bring Me The Horizon", "UCGNMi-3h6Tx72EfbW6f2BxQ"), ("Spiritbox", "UC8RF_zYqBLbVXilKjh6sk2g")]);
-        assert!(found.artists[2].thumbnail.is_some(), "YouTube's own artists keep their pictures");
+        assert_eq!(&artists[..2], [("Bring Me The Horizon", "UCGNMi-3h6Tx72EfbW6f2BxQ"), ("Spiritbox", "UC8RF_zYqBLbVXilKjh6sk2g")], "YouTube's own first");
+        assert!(found.artists[0].thumbnail.is_some(), "YouTube's own artists keep their pictures");
+        let listed = found.artists.iter().position(|a| a.id == "UCDRpiXyw9PHsm_YS0wOqRcQ").unwrap();
+        assert_eq!(&artists[listed..listed + 2], [("Maphra", "UCDRpiXyw9PHsm_YS0wOqRcQ"), ("MAPHRA", "UCaUbhZHASlYW9TlrKt1rLYg")], "then the credited ones named as asked");
         let asked = fake.asked();
         let looked_up: Vec<Value> = asked[5..].iter().map(|r| body(r)["browseId"].clone()).collect();
-        assert_eq!(looked_up, ["UCDRpiXyw9PHsm_YS0wOqRcQ", "UCaUbhZHASlYW9TlrKt1rLYg"], "only the leading artists without one");
-        assert!(found.artists[..2].iter().all(|a| a.thumbnail.is_some()), "their pages' pictures");
+        assert_eq!(looked_up, ["UCDRpiXyw9PHsm_YS0wOqRcQ", "UCaUbhZHASlYW9TlrKt1rLYg"], "only those artists without one");
+        assert!(found.artists[listed..listed + 2].iter().all(|a| a.thumbnail.is_some()), "their pages' pictures");
         assert!(artists.iter().any(|&(name, _)| name == "Faouzia"), "a song's artist is found too");
         let mut ids: Vec<&str> = artists.iter().map(|a| a.1).collect();
         ids.sort();
