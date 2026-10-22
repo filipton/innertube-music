@@ -82,6 +82,9 @@ and the clients that take them serve ciphered URLs that only YouTube's JavaScrip
 visitor ids and addresses removed or replaced. The `fixtures` feature exposes their folder as
 `innertube_music::FIXTURES`, for a dependent's own tests.
 
+`cargo run --example live -- search <query>` (or `artist <UC...>`, `album <MPREb_...>`, `home`) asks
+the real YouTube Music, signed out, and prints what the parsers make of today's answers.
+
 ## License
 
 MIT

@@ -18,3 +18,7 @@ fixtures = []
 serde_json = "1"
 # SAPISIDHASH, the signed-in requests' Authorization.
 sha1_smol = "1"
+
+[dev-dependencies]
+# The `live` example's HTTP client.
+ureq = "2"
