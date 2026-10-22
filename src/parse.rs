@@ -256,11 +256,11 @@ fn thumbnail(v: &Value) -> Option<String> {
     })
 }
 
-/// The URL to fetch thumbnail `base` at `px` square: Google's image servers scale it, other URLs (video
-/// stills) come as they are.
+/// The URL to fetch thumbnail `base` at `px` square: Google's image servers scale it and crop it to the
+/// square (`-p`; an artist's picture is a wide banner), other URLs (video stills) come as they are.
 pub fn thumbnail_url(base: &str, px: u32) -> String {
     if sized_host(base) {
-        format!("{base}=w{px}-h{px}-l90-rj")
+        format!("{base}=w{px}-h{px}-p-l90-rj")
     } else {
         base.to_string()
     }
@@ -869,7 +869,7 @@ mod tests {
         let t = serde_json::json!({ "thumbnails": [{ "url": "https://i.ytimg.com/vi/x/hq720.jpg" }] });
         assert_eq!(thumbnail(&t).as_deref(), Some("https://i.ytimg.com/vi/x/hq720.jpg"));
         assert_eq!(thumbnail_url("https://i.ytimg.com/vi/x/hq720.jpg", 320), "https://i.ytimg.com/vi/x/hq720.jpg");
-        assert_eq!(thumbnail_url("https://yt3.googleusercontent.com/abc", 320), "https://yt3.googleusercontent.com/abc=w320-h320-l90-rj");
+        assert_eq!(thumbnail_url("https://yt3.googleusercontent.com/abc", 320), "https://yt3.googleusercontent.com/abc=w320-h320-p-l90-rj", "cropped to the square");
     }
 
     /// The home feed's shelves: songs from list items, playlists and albums from cards, and the
