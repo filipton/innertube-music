@@ -102,6 +102,9 @@ struct Client {
 /// music.youtube.com's web client (yt-dlp `web_music`): search, browse and the account.
 const WEB_REMIX: Client = Client { name: "WEB_REMIX", version: "1.20260707.12.00", number: "67", host: "music.youtube.com", user_agent: None, device: &[], signs_in: true };
 
+/// The most pages of the home feed asked for, each one request: a signed-in feed runs to about eight.
+pub const HOME_PAGES: usize = 10;
+
 /// The browser a signed-in session's requests say they come from.
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0";
 
@@ -551,12 +554,15 @@ impl InnerTube {
         Ok(parse::watch_queue(&answer))
     }
 
-    /// The home feed's shelves, its first page and the one after: the account's own when signed in,
-    /// everyone's otherwise.
+    /// The home feed's shelves, page after page to its end (at most [`HOME_PAGES`]): the account's own
+    /// when signed in, everyone's otherwise.
     pub async fn home<H: Http + Sync>(&self, http: &H) -> Result<Vec<Shelf>, H::Error> {
-        let (mut shelves, next) = parse::feed(&self.browse(http, "FEmusic_home").await?);
-        if let Some(token) = next {
-            shelves.extend(parse::feed(&self.call(&WEB_REMIX, http, "browse", json!({ "continuation": token })).await?).0);
+        let (mut shelves, mut next) = parse::feed(&self.browse(http, "FEmusic_home").await?);
+        for _ in 1..HOME_PAGES {
+            let Some(token) = next.take() else { break };
+            let (more, after) = parse::feed(&self.call(&WEB_REMIX, http, "browse", json!({ "continuation": token })).await?);
+            shelves.extend(more);
+            next = after;
         }
         let songs = shelves.iter_mut().flat_map(|s| &mut s.items).filter_map(|i| if let Item::Song(s) = i { Some(s) } else { None });
         self.fill_lengths(http, songs).await;
@@ -1013,15 +1019,21 @@ pub(crate) mod tests {
         assert_eq!(*held.0.lock().unwrap(), 4);
     }
 
-    /// The home feed is its first page and the one its continuation names, shelf by shelf.
+    /// The home feed is its first page and each its continuation names after it, to its end, shelf by
+    /// shelf.
     #[test]
-    fn home_is_two_pages_of_shelves() {
-        let fake = Fake::with(vec![ok("home"), ok("home_more")]);
+    fn home_is_its_pages_to_the_end() {
+        let mut middle: Value = serde_json::from_str(&fixture("home_more")).unwrap();
+        middle["continuationContents"]["sectionListContinuation"]["continuations"] = json!([{ "nextContinuationData": { "continuation": "THIRD" } }]);
+        let middle = Response { status: 200, body: middle.to_string().into_bytes(), set_cookies: Vec::new() };
+        let fake = Fake::with(vec![ok("home"), middle, ok("home_more")]);
         let shelves = ready(InnerTube::default().home(&fake)).unwrap();
         let titles: Vec<&str> = shelves.iter().map(|s| s.title.as_str()).collect();
-        assert_eq!(titles, ["Quick picks", "All hits", "Party music", "New releases"]);
-        assert_eq!(body(&fake.asked()[0])["browseId"], "FEmusic_home");
-        assert_eq!(body(&fake.asked()[1])["continuation"], "FIXTURE_CONTINUATION");
+        assert_eq!(titles, ["Quick picks", "All hits", "Party music", "New releases", "Party music", "New releases"]);
+        let asked = fake.asked();
+        assert_eq!(body(&asked[0])["browseId"], "FEmusic_home");
+        assert_eq!((body(&asked[1])["continuation"].as_str(), body(&asked[2])["continuation"].as_str()), (Some("FIXTURE_CONTINUATION"), Some("THIRD")));
+        assert!(asked[3..].iter().all(|r| !r.url.contains("/browse")), "the last page names no more");
     }
 
     /// Home's song rows show no length: one queue request gives every one of them its own.
