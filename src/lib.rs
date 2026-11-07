@@ -208,6 +208,30 @@ async fn join_all<F: Future>(futures: Vec<F>) -> Vec<F::Output> {
     .await
 }
 
+/// Polls `a` and `b` side by side until both are done.
+async fn both<A: Future, B: Future>(a: A, b: B) -> (A::Output, B::Output) {
+    let (mut a, mut b) = (std::pin::pin!(a), std::pin::pin!(b));
+    let (mut x, mut y) = (None, None);
+    std::future::poll_fn(move |cx| {
+        if x.is_none() {
+            if let std::task::Poll::Ready(v) = a.as_mut().poll(cx) {
+                x = Some(v);
+            }
+        }
+        if y.is_none() {
+            if let std::task::Poll::Ready(v) = b.as_mut().poll(cx) {
+                y = Some(v);
+            }
+        }
+        if x.is_some() && y.is_some() {
+            std::task::Poll::Ready((x.take().unwrap(), y.take().unwrap()))
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await
+}
+
 /// `ranked` in its order, each item as `detailed` has it where it does (a filtered search says more: a
 /// song's album and length), then the rest of `detailed`; each `key` once.
 fn merged<T>(ranked: Vec<T>, detailed: Vec<T>, key: impl Fn(&T) -> &str) -> Vec<T> {
@@ -422,7 +446,7 @@ impl InnerTube {
     /// What matches `query`, as music.youtube.com finds it: the unfiltered search (its top result and
     /// every kind ranked together: videos, profiles and playlists too), then the songs, albums and
     /// artists of a filtered search each (one page, about 20, of each) that it lacks. Asked side by side;
-    /// then the lengths the unfiltered rows do not show.
+    /// then, side by side too, the lengths the unfiltered rows do not show and the added artists' pictures.
     pub async fn search<H: Http + Sync>(&self, http: &H, query: &str) -> Result<SearchResults, H::Error> {
         let ask = |filter: Option<&str>| {
             let mut body = json!({ "query": query });
@@ -444,8 +468,7 @@ impl InnerTube {
         let first: Vec<String> = songs.first().map(|s| s.artists.iter().map(|a| a.id.clone()).collect()).unwrap_or_default();
         let unlisted = credited(&songs).into_iter().filter(|a| !artists.iter().any(|b| b.id == a.id));
         let (mut pictured, others): (Vec<Artist>, Vec<Artist>) = unlisted.partition(|a| first.contains(&a.id) || close(query, &a.name));
-        self.fill_lengths(http, songs.iter_mut()).await;
-        self.fill_pictures(http, &mut pictured).await;
+        both(self.fill_lengths(http, songs.iter_mut()), self.fill_pictures(http, &mut pictured)).await;
         artists.extend(pictured);
         artists.extend(others);
         Ok(SearchResults { songs, albums: merged(all.albums, al.albums, |a| &a.id), artists, playlists: all.playlists })
@@ -480,14 +503,30 @@ impl InnerTube {
     }
 
     /// Artist `id` (`UC...`): all its albums and singles (its shelves' More, asked side by side;
-    /// unanswered, the first ten its page shows), top songs with their lengths, similar artists,
-    /// description. A channel without top songs (a profile's) lists all its videos instead, asked for
-    /// with one more request; unanswered, the first few its page shows.
+    /// unanswered, the first ten its page shows), top songs with their lengths (asked beside them),
+    /// similar artists, description. A channel without top songs (a profile's) lists all its videos
+    /// instead, asked for beside them too, then their lengths; unanswered, the first few its page shows.
     pub async fn artist<H: Http + Sync>(&self, http: &H, id: &str) -> Result<ArtistPage, H::Error> {
         let v = self.browse(http, id).await?;
         let mut page = parse::artist(&v, id);
         let more = parse::all_releases(&v);
-        let lists = join_all(more.into_iter().map(|body| self.call(&WEB_REMIX, http, "browse", body)).collect()).await;
+        let all_videos = parse::all_videos(&v);
+        // A channel's videos replace its top songs, so only an artist's top songs are given their lengths
+        // beside the other requests.
+        let asked_videos = all_videos.is_some();
+        let videos = async {
+            match all_videos {
+                Some(more) => self.call(&WEB_REMIX, http, "browse", more).await.ok(),
+                None => None,
+            }
+        };
+        let lengths = async {
+            if !asked_videos {
+                self.fill_lengths(http, &mut page.top_songs).await;
+            }
+        };
+        let lists = join_all(more.into_iter().map(|body| self.call(&WEB_REMIX, http, "browse", body)).collect());
+        let (lists, (all, ())) = both(lists, both(videos, lengths)).await;
         let mut releases: Vec<Album> = lists.into_iter().filter_map(Result::ok).flat_map(|l| parse::releases(&l, &page.artist)).collect();
         if !releases.is_empty() {
             releases.extend(std::mem::take(&mut page.albums));
@@ -495,15 +534,15 @@ impl InnerTube {
             releases.retain(|a| seen.insert(a.id.clone()));
             page.albums = releases;
         }
-        if let Some(more) = parse::all_videos(&v) {
-            if let Ok(all) = self.call(&WEB_REMIX, http, "browse", more).await {
-                let videos = parse::channel_videos(&all, &page.artist);
-                if !videos.is_empty() {
-                    page.top_songs = videos;
-                }
+        if let Some(all) = all {
+            let videos = parse::channel_videos(&all, &page.artist);
+            if !videos.is_empty() {
+                page.top_songs = videos;
             }
         }
-        self.fill_lengths(http, &mut page.top_songs).await;
+        if asked_videos {
+            self.fill_lengths(http, &mut page.top_songs).await;
+        }
         Ok(page)
     }
 
@@ -1000,23 +1039,59 @@ pub(crate) mod tests {
         assert_eq!(ids.len(), artists.len(), "each once");
     }
 
+    /// Answers the first requests with `answers` and holds every one after: what is asked before an
+    /// answer comes is what goes out side by side.
+    struct Holding {
+        answers: Mutex<Vec<Response>>,
+        asked: Mutex<usize>,
+    }
+
+    impl Holding {
+        fn after(answers: Vec<Response>) -> Holding {
+            Holding { answers: Mutex::new(answers.into_iter().rev().collect()), asked: Mutex::new(0) }
+        }
+
+        /// How many requests `f` has made once only held ones are left.
+        fn asked<F: Future>(&self, f: F) -> usize {
+            let mut f = std::pin::pin!(f);
+            assert!(f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+            *self.asked.lock().unwrap()
+        }
+    }
+
+    impl Http for Holding {
+        type Error = ();
+        fn send(&self, _: Request) -> impl Future<Output = std::result::Result<Response, ()>> + Send {
+            *self.asked.lock().unwrap() += 1;
+            let answer = self.answers.lock().unwrap().pop();
+            async move {
+                match answer {
+                    Some(a) => Ok(a),
+                    None => std::future::pending().await,
+                }
+            }
+        }
+    }
+
     /// The four searches are in flight together: none waits for another's answer.
     #[test]
     fn searches_go_out_side_by_side() {
-        struct Held(Mutex<usize>);
-        impl Http for Held {
-            type Error = ();
-            fn send(&self, _: Request) -> impl Future<Output = std::result::Result<Response, ()>> + Send {
-                *self.0.lock().unwrap() += 1;
-                std::future::pending()
-            }
-        }
-        let held = Held(Mutex::new(0));
-        let yt = InnerTube::default();
-        let mut f = std::pin::pin!(yt.search(&held, "q"));
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        assert!(f.as_mut().poll(&mut cx).is_pending());
-        assert_eq!(*held.0.lock().unwrap(), 4);
+        let held = Holding::after(Vec::new());
+        assert_eq!(held.asked(InnerTube::default().search(&held, "q")), 4);
+    }
+
+    /// A search's song lengths and the pictures of the artists it adds are asked side by side.
+    #[test]
+    fn a_searchs_lengths_and_pictures_go_out_together() {
+        let held = Holding::after(vec![ok("search_typo_all"), ok("search_typo_songs"), Response { status: 200, body: b"{}".to_vec(), set_cookies: Vec::new() }, ok("search_typo_artists")]);
+        assert_eq!(held.asked(InnerTube::default().search(&held, "Mahpra")), 4 + 1 + 2, "the queue and both artists' pages");
+    }
+
+    /// An artist's release lists and its top songs' lengths are asked side by side.
+    #[test]
+    fn an_artists_releases_and_lengths_go_out_together() {
+        let held = Holding::after(vec![ok("artist")]);
+        assert_eq!(held.asked(InnerTube::default().artist(&held, "UCRr1xG_2WIDs18a6cIiCxeA")), 1 + 2 + 1, "its page, its albums' and singles' lists, the queue");
     }
 
     /// The home feed is its first page and each its continuation names after it, to its end, shelf by
