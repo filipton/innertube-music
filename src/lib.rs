@@ -628,6 +628,18 @@ impl InnerTube {
         Ok(items.into_iter().filter_map(|i| if let Item::Album(a) = i { Some(a) } else { None }).collect())
     }
 
+    /// The artists the account subscribes to (the library's first page of them).
+    pub async fn library_artists<H: Http + Sync>(&self, http: &H) -> Result<Vec<Artist>, H::Error> {
+        let items = self.library(http, "FEmusic_library_corpus_artists").await?;
+        Ok(items.into_iter().filter_map(|i| if let Item::Artist(a) = i { Some(a) } else { None }).collect())
+    }
+
+    /// The songs in the account's library (its first page of them), without the list's "Shuffle all".
+    pub async fn library_songs<H: Http + Sync>(&self, http: &H) -> Result<Vec<Song>, H::Error> {
+        let items = self.library(http, "FEmusic_liked_videos").await?;
+        Ok(items.into_iter().filter_map(|i| if let Item::Song(s) = i { Some(s) } else { None }).collect())
+    }
+
     /// The songs the account liked, newest first (the first page of its "Liked music").
     pub async fn liked_songs<H: Http + Sync>(&self, http: &H) -> Result<Vec<Song>, H::Error> {
         if self.cookies().is_none() {
@@ -1269,5 +1281,21 @@ pub(crate) mod tests {
         assert_eq!(albums.iter().map(|a| (a.title.as_str(), a.year, a.artists[0].id.as_str())).collect::<Vec<_>>(), [("Random Access Memories", 2013, "UCRr1xG_2WIDs18a6cIiCxeA"), ("Homework", 1997, "UCRr1xG_2WIDs18a6cIiCxeA")]);
         assert_eq!(ready(yt.liked_songs(&fake)).unwrap().len(), 3);
         assert_eq!(body(&fake.asked()[2])["browseId"], "VLLM");
+    }
+
+    /// The artists subscribed to and the songs in the library, both one list. Their answers are
+    /// assembled from recorded items in the list page YouTube Music answers (ytmusicapi reads it so),
+    /// not recorded signed in.
+    #[test]
+    fn library_lists() {
+        let fake = Fake::with(vec![ok("library_artists"), ok("library_songs")]);
+        let yt = signed_in();
+        let artists = ready(yt.library_artists(&fake)).unwrap();
+        assert_eq!(artists.iter().map(|a| (a.id.as_str(), a.name.as_str())).collect::<Vec<_>>(), [("UCRr1xG_2WIDs18a6cIiCxeA", "Daft Punk"), ("UClYV6hHlupm_S_ObS1W-DYw", "The Weeknd")]);
+        let songs = ready(yt.library_songs(&fake)).unwrap();
+        assert_eq!(songs.iter().map(|s| s.video_id.as_str()).collect::<Vec<_>>(), ["khnokW3Mw24", "Rgrt_8mXrK8", "wU26xVT_vBU"], "\"Shuffle all\" is no song");
+        assert_eq!((songs[0].title.as_str(), songs[0].artist.as_str()), ("Instant Crush (feat. Julian Casablancas)", "Daft Punk & Julian Casablancas"));
+        let asked: Vec<Value> = fake.asked().iter().map(|r| body(r)["browseId"].clone()).collect();
+        assert_eq!(asked, ["FEmusic_library_corpus_artists", "FEmusic_liked_videos"]);
     }
 }

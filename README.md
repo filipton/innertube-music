@@ -51,7 +51,8 @@ put the range in the URL (`&range=0-{length - 1}`), which comes at full speed up
 `InnerTube::set_cookies` signs a session in with a browser session's cookies (`auth::Cookies::parse`
 reads a `Cookie` header or a cookies.txt). Signed-in requests to music.youtube.com carry them with a
 `SAPISIDHASH` authorization; the stream client never does. Then `home` is the account's own,
-and `library_playlists`, `library_albums`, `liked_songs` and `like` work.
+and `library_playlists`, `library_albums`, `library_artists`, `library_songs`, `liked_songs` and `like`
+work.
 
 Google rotates such a session's cookies, and stops honoring one nobody rotates. To stay signed in:
 
