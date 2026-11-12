@@ -1200,7 +1200,7 @@ pub(crate) mod tests {
         let found = ready(yt.channels(&fake)).unwrap();
         let shown: Vec<_> = found.iter().map(|c| (c.name.as_str(), c.handle.as_deref(), c.selected, c.page_id.as_deref())).collect();
         assert_eq!(shown, [("Ada", Some("@ada"), true, None), ("Ada's covers", Some("@adacovers"), false, Some("100000000000000000001"))]);
-        assert_eq!(found[1].thumbnail.as_deref(), Some("https://yt3.ggpht.com/covers=s108-c-k-c0x00ffffff-no-rj"));
+        assert_eq!(found[1].thumbnail.as_deref(), Some("https://yt3.ggpht.com/covers"));
         let r = &fake.asked()[0];
         assert!(r.url.starts_with("https://www.youtube.com/youtubei/v1/account/accounts_list"), "{}", r.url);
         assert_eq!((r.header("X-Origin"), body(r)["context"]["client"]["clientName"].as_str()), (Some("https://www.youtube.com"), Some("WEB")));

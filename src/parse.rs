@@ -762,7 +762,7 @@ pub(crate) fn channels(v: &Value) -> Vec<Channel> {
         Some(Channel {
             name: words(item.get("accountName")?)?,
             handle: item.get("channelHandle").and_then(words),
-            thumbnail: item.pointer("/accountPhoto/thumbnails").and_then(Value::as_array).and_then(|t| t.last()).and_then(|t| str_at(t, "/url")).map(str::to_string),
+            thumbnail: item.get("accountPhoto").and_then(thumbnail),
             selected: item.get("isSelected").and_then(Value::as_bool).unwrap_or(false),
             page_id,
         })
