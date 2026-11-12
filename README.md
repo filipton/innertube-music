@@ -54,6 +54,11 @@ reads a `Cookie` header or a cookies.txt). Signed-in requests to music.youtube.c
 and `library_playlists`, `library_albums`, `library_artists`, `library_songs`, `liked_songs` and `like`
 work.
 
+A Google account can have more than one channel, each with its own library. `channels` lists them
+(youtube.com's channel switcher), and `set_channel` with one's `page_id` serves the session's
+music.youtube.com requests as that channel; `None`, or the account's own channel (which has no page id),
+serves its own.
+
 Google rotates such a session's cookies, and stops honoring one nobody rotates. To stay signed in:
 
 - call `rotate` before a call when `auth::rotation_due(last_rotated, now)` (every

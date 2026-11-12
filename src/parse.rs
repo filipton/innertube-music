@@ -109,6 +109,20 @@ pub struct Playlist {
     pub thumbnail: Option<String>,
 }
 
+/// One of the Google account's channels, as YouTube's channel switcher lists them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Channel {
+    pub name: String,
+    /// Its handle (`@...`), when it has one.
+    pub handle: Option<String>,
+    pub thumbnail: Option<String>,
+    /// The one YouTube serves when no other is asked for.
+    pub selected: bool,
+    /// What a request names to be served as this channel ([`crate::InnerTube::set_channel`]); None for the
+    /// account's own channel, which is served when none is named.
+    pub page_id: Option<String>,
+}
+
 /// Songs, albums, artists and playlists of a search, in YouTube's order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchResults {
@@ -718,6 +732,28 @@ pub(crate) fn logged_out(v: &Value) -> bool {
         .filter_map(|s| s.get("params").and_then(Value::as_array))
         .flatten()
         .any(|p| p.get("key").and_then(Value::as_str) == Some("logged_in") && p.get("value").and_then(Value::as_str) == Some("0"))
+}
+
+/// A text object's words, whether `simpleText` or runs.
+fn words(text: &Value) -> Option<String> {
+    let w = text.get("simpleText").and_then(Value::as_str).map_or_else(|| joined(&runs(text)), str::to_string);
+    Some(w).filter(|w| !w.is_empty())
+}
+
+/// The account's channels, from its channel switcher (`account/accounts_list`).
+pub(crate) fn channels(v: &Value) -> Vec<Channel> {
+    let contents = v.pointer("/actions/0/updateChannelSwitcherPageAction/page/channelSwitcherPageRenderer/contents").and_then(Value::as_array);
+    contents.into_iter().flatten().filter_map(|c| c.get("accountItemRenderer")).filter_map(|item| {
+        let tokens = item.pointer("/serviceEndpoint/selectActiveIdentityEndpoint/supportedTokens").and_then(Value::as_array);
+        let page_id = tokens.into_iter().flatten().find_map(|t| str_at(t, "/pageIdToken/pageId")).map(str::to_string);
+        Some(Channel {
+            name: words(item.get("accountName")?)?,
+            handle: item.get("channelHandle").and_then(words),
+            thumbnail: item.pointer("/accountPhoto/thumbnails").and_then(Value::as_array).and_then(|t| t.last()).and_then(|t| str_at(t, "/url")).map(str::to_string),
+            selected: item.get("isSelected").and_then(Value::as_bool).unwrap_or(false),
+            page_id,
+        })
+    }).collect()
 }
 
 /// The signed-in account's name, as its menu shows it.

@@ -1,0 +1,103 @@
+{
+ "responseContext": {},
+ "selectText": {
+  "simpleText": "Accounts"
+ },
+ "actions": [
+  {
+   "updateChannelSwitcherPageAction": {
+    "page": {
+     "channelSwitcherPageRenderer": {
+      "header": {},
+      "contents": [
+       {
+        "buttonRenderer": {
+         "text": {
+          "simpleText": "Add channel"
+         }
+        }
+       },
+       {
+        "accountItemRenderer": {
+         "accountName": {
+          "simpleText": "Ada"
+         },
+         "accountPhoto": {
+          "thumbnails": [
+           {
+            "url": "https://yt3.ggpht.com/ada=s108-c-k-c0x00ffffff-no-rj",
+            "width": 108,
+            "height": 108
+           }
+          ]
+         },
+         "isSelected": true,
+         "isDisabled": false,
+         "hasChannel": true,
+         "serviceEndpoint": {
+          "selectActiveIdentityEndpoint": {
+           "supportedTokens": [
+            {
+             "datasyncIdToken": {
+              "datasyncIdToken": "100000000000000000002||"
+             }
+            }
+           ]
+          }
+         },
+         "accountByline": {
+          "simpleText": "No subscribers"
+         },
+         "channelHandle": {
+          "simpleText": "@ada"
+         }
+        }
+       },
+       {
+        "accountItemRenderer": {
+         "accountName": {
+          "simpleText": "Ada's covers"
+         },
+         "accountPhoto": {
+          "thumbnails": [
+           {
+            "url": "https://yt3.ggpht.com/covers=s108-c-k-c0x00ffffff-no-rj",
+            "width": 108,
+            "height": 108
+           }
+          ]
+         },
+         "isSelected": false,
+         "isDisabled": false,
+         "hasChannel": true,
+         "serviceEndpoint": {
+          "selectActiveIdentityEndpoint": {
+           "supportedTokens": [
+            {
+             "pageIdToken": {
+              "pageId": "100000000000000000001"
+             }
+            },
+            {
+             "datasyncIdToken": {
+              "datasyncIdToken": "100000000000000000001||100000000000000000002"
+             }
+            }
+           ]
+          }
+         },
+         "accountByline": {
+          "simpleText": "No subscribers"
+         },
+         "channelHandle": {
+          "simpleText": "@adacovers"
+         }
+        }
+       }
+      ]
+     }
+    }
+   }
+  }
+ ]
+}

@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 pub use auth::Cookies;
-pub use parse::{thumbnail_url, Album, AlbumLink, AlbumPage, Artist, ArtistLink, ArtistPage, Item, Playlist, PlaylistPage, SearchResults, Shelf, Song};
+pub use parse::{thumbnail_url, Album, AlbumLink, AlbumPage, Artist, ArtistLink, ArtistPage, Channel, Item, Playlist, PlaylistPage, SearchResults, Shelf, Song};
 pub use player::{pick, Format, Stream, PART};
 
 /// The folder of trimmed real answers this crate's tests parse (`tests/fixtures`), for a dependent's tests.
@@ -97,10 +97,15 @@ struct Client {
     /// Sent signed in when there is an account; the stream client never is (a web session's cookies on
     /// another client are what YouTube flags).
     signs_in: bool,
+    /// Signed in, served as the channel chosen ([`InnerTube::set_channel`]).
+    as_channel: bool,
 }
 
 /// music.youtube.com's web client (yt-dlp `web_music`): search, browse and the account.
-const WEB_REMIX: Client = Client { name: "WEB_REMIX", version: "1.20260707.12.00", number: "67", host: "music.youtube.com", user_agent: None, device: &[], signs_in: true };
+const WEB_REMIX: Client = Client { name: "WEB_REMIX", version: "1.20260707.12.00", number: "67", host: "music.youtube.com", user_agent: None, device: &[], signs_in: true, as_channel: true };
+
+/// youtube.com's web client: only its channel switcher lists the account's channels, all of them.
+const WEB: Client = Client { name: "WEB", version: "2.20260707.01.00", number: "1", host: "www.youtube.com", user_agent: None, device: &[], signs_in: true, as_channel: false };
 
 /// The most pages of the home feed asked for, each one request: a signed-in feed runs to about eight.
 pub const HOME_PAGES: usize = 10;
@@ -114,9 +119,9 @@ const VISIONOS_DEVICE: &[(&str, &str)] = &[("deviceMake", "Apple"), ("deviceMode
 /// The visionOS builds asked for streams, in order (yt-dlp `visionos` is 1.02; 1.03 and 1.01 are its
 /// siblings that zemer-app found serving whole songs when 0.1 was retired on 2026-10-07).
 const VISIONOS: [Client; 3] = [
-    Client { name: "VISIONOS", version: "1.02", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false },
-    Client { name: "VISIONOS", version: "1.03", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false },
-    Client { name: "VISIONOS", version: "1.01", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false },
+    Client { name: "VISIONOS", version: "1.02", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false },
+    Client { name: "VISIONOS", version: "1.03", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false },
+    Client { name: "VISIONOS", version: "1.01", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false },
 ];
 
 /// Where a youtube.com session's cookies are rotated, and the body it expects.
@@ -141,8 +146,8 @@ fn unix_now() -> u64 {
 
 impl Client {
     /// The request of `endpoint` with `fields` beside the client's context, as `visitor` if known, signed
-    /// in with `cookies` when given.
-    fn request(&self, endpoint: &str, fields: Value, visitor: Option<&str>, cookies: Option<&Cookies>) -> Request {
+    /// in with `cookies` when given, then served as `channel` (a page id) when named.
+    fn request(&self, endpoint: &str, fields: Value, visitor: Option<&str>, cookies: Option<&Cookies>, channel: Option<&str>) -> Request {
         let origin = format!("https://{}", self.host);
         let user_agent = self.user_agent.or(cookies.map(|_| BROWSER_UA));
         let mut client = json!({ "clientName": self.name, "clientVersion": self.version, "hl": "en" });
@@ -156,6 +161,9 @@ impl Client {
             client["visitorData"] = v.into();
         }
         let mut body = json!({ "context": { "client": client } });
+        if let (Some(id), Some(_)) = (channel, cookies) {
+            body["context"]["user"] = json!({ "onBehalfOfUser": id });
+        }
         if let (Some(b), Value::Object(f)) = (body.as_object_mut(), fields) {
             b.extend(f);
         }
@@ -309,6 +317,8 @@ pub enum Rotated {
 pub struct InnerTube {
     visitor: Mutex<Visitor>,
     account: Mutex<Option<Account>>,
+    /// The page id of the channel served as; None for the account's own.
+    channel: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -346,6 +356,11 @@ impl InnerTube {
         *lock(&self.account) = cookies.map(|cookies| Account { cookies, changed: false });
     }
 
+    /// Serves the session as the account's channel with `page_id` ([`Channel::page_id`]); None for its own.
+    pub fn set_channel(&self, page_id: Option<String>) {
+        *lock(&self.channel) = page_id;
+    }
+
     /// The session's cookies as they are now; None when signed out.
     pub fn cookies(&self) -> Option<Cookies> {
         lock(&self.account).as_ref().map(|a| a.cookies.clone())
@@ -370,7 +385,8 @@ impl InnerTube {
     /// visitor id and, signed in, the rotated cookies.
     async fn call_once<H: Http + Sync>(&self, client: &Client, http: &H, endpoint: &str, fields: Value) -> Result<Value, H::Error> {
         let cookies = self.cookies().filter(|_| client.signs_in);
-        let r = http.send(client.request(endpoint, fields, self.visitor().as_deref(), cookies.as_ref())).await.map_err(Error::Transport)?;
+        let channel = lock(&self.channel).clone().filter(|_| client.as_channel);
+        let r = http.send(client.request(endpoint, fields, self.visitor().as_deref(), cookies.as_ref(), channel.as_deref())).await.map_err(Error::Transport)?;
         if cookies.is_some() {
             self.take_set_cookies(&r.set_cookies);
         }
@@ -431,6 +447,15 @@ impl InnerTube {
             }
             status => Err(Error::Status(status)),
         }
+    }
+
+    /// The Google account's channels, its own and the others it manages, whichever is served now.
+    pub async fn channels<H: Http + Sync>(&self, http: &H) -> Result<Vec<Channel>, H::Error> {
+        if self.cookies().is_none() {
+            return Err(Error::SignedOut);
+        }
+        let fields = json!({ "requestType": "ACCOUNTS_LIST_REQUEST_TYPE_CHANNEL_SWITCHER", "callCircumstance": "SWITCHING_USERS_FULL" });
+        Ok(parse::channels(&self.call(&WEB, http, "account/accounts_list", fields).await?))
     }
 
     /// The signed-in account's name, as YouTube shows it; [`Error::SignedOut`] when the cookies are no
@@ -1166,6 +1191,39 @@ pub(crate) mod tests {
         assert!(p.header("Cookie").is_none() && p.header("Authorization").is_none());
     }
 
+    /// The channel switcher lists the account's channels from youtube.com, signed for it; only one
+    /// that is not the account's own has a page id.
+    #[test]
+    fn the_accounts_channels_are_listed() {
+        let yt = signed_in();
+        let fake = Fake::with(vec![ok("accounts_list")]);
+        let found = ready(yt.channels(&fake)).unwrap();
+        let shown: Vec<_> = found.iter().map(|c| (c.name.as_str(), c.handle.as_deref(), c.selected, c.page_id.as_deref())).collect();
+        assert_eq!(shown, [("Ada", Some("@ada"), true, None), ("Ada's covers", Some("@adacovers"), false, Some("100000000000000000001"))]);
+        assert_eq!(found[1].thumbnail.as_deref(), Some("https://yt3.ggpht.com/covers=s108-c-k-c0x00ffffff-no-rj"));
+        let r = &fake.asked()[0];
+        assert!(r.url.starts_with("https://www.youtube.com/youtubei/v1/account/accounts_list"), "{}", r.url);
+        assert_eq!((r.header("X-Origin"), body(r)["context"]["client"]["clientName"].as_str()), (Some("https://www.youtube.com"), Some("WEB")));
+    }
+
+    /// Served as another channel, music.youtube.com's requests name it; the channel list and the streams
+    /// never do, and its own channel again names none.
+    #[test]
+    fn a_channel_chosen_is_named_in_music_requests() {
+        let yt = signed_in();
+        yt.set_channel(Some("100000000000000000001".into()));
+        let fake = Fake::with(vec![ok("library_playlists"), ok("accounts_list"), ok("player")]);
+        ready(yt.library_playlists(&fake)).unwrap();
+        ready(yt.channels(&fake)).unwrap();
+        ready(yt.player(&fake, "v")).unwrap();
+        let named: Vec<Option<String>> = fake.asked().iter().map(|r| body(r)["context"]["user"]["onBehalfOfUser"].as_str().map(str::to_string)).collect();
+        assert_eq!(named, [Some("100000000000000000001".to_string()), None, None]);
+        yt.set_channel(None);
+        let fake = Fake::with(vec![ok("library_playlists")]);
+        ready(yt.library_playlists(&fake)).unwrap();
+        assert!(body(&fake.asked()[0])["context"].get("user").is_none());
+    }
+
     /// The library, likes and the account's name need an account: nothing is asked without one.
     #[test]
     fn personal_calls_need_an_account() {
@@ -1175,6 +1233,7 @@ pub(crate) mod tests {
         assert_eq!(ready(yt.liked_songs(&fake)), Err(Error::SignedOut));
         assert_eq!(ready(yt.like(&fake, "v", true)), Err(Error::SignedOut));
         assert_eq!(ready(yt.account_name(&fake)), Err(Error::SignedOut));
+        assert_eq!(ready(yt.channels(&fake)), Err(Error::SignedOut));
         assert!(fake.asked().is_empty());
     }
 
