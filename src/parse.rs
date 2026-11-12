@@ -255,6 +255,12 @@ fn year(text: &str) -> Option<u32> {
     (t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit())).then(|| t.parse().ok()).flatten()
 }
 
+/// The songs "150 songs" or "2 tracks" counts.
+fn song_count(text: &str) -> Option<u32> {
+    let (n, unit) = text.trim().split_once(' ')?;
+    matches!(unit, "song" | "songs" | "track" | "tracks").then(|| n.replace(',', "").parse().ok()).flatten()
+}
+
 /// Whether a thumbnail URL takes its size after `=` (Google's image servers).
 fn sized_host(url: &str) -> bool {
     url.split('/').nth(2).is_some_and(|h| h.ends_with(".googleusercontent.com") || h.ends_with(".ggpht.com"))
@@ -390,7 +396,14 @@ fn linked(kind: Leads, browse_id: &str, title: String, thumb: Option<String>, su
             Item::Album(a)
         }
         Leads::Artist => Item::Artist(Artist { id: browse_id.to_string(), name: title, thumbnail: thumb }),
-        Leads::Playlist => Item::Playlist(Playlist { id: browse_id.to_string(), title, description: Some(joined(subtitle)).filter(|d| !d.is_empty()), thumbnail: thumb, ..Default::default() }),
+        Leads::Playlist => Item::Playlist(Playlist {
+            id: browse_id.to_string(),
+            title,
+            description: Some(joined(subtitle)).filter(|d| !d.is_empty()),
+            song_count: segments(subtitle).find_map(|s| song_count(&joined(s))),
+            thumbnail: thumb,
+            ..Default::default()
+        }),
         Leads::Episode | Leads::Elsewhere => return None,
     })
 }
@@ -934,6 +947,7 @@ mod tests {
             assert_eq!(seconds(not), None, "{not}");
         }
         assert_eq!((year("2013"), year("13 songs"), year("20134")), (Some(2013), None, None));
+        assert_eq!(["150 songs", "1 track", "1,204 tracks", "Daft Punk", "2013", "songs"].map(song_count), [Some(150), Some(1), Some(1204), None, None, None]);
         let t = serde_json::json!({ "thumbnails": [{ "url": "https://i.ytimg.com/vi/x/hq720.jpg" }] });
         assert_eq!(thumbnail(&t).as_deref(), Some("https://i.ytimg.com/vi/x/hq720.jpg"));
         assert_eq!(thumbnail_url("https://i.ytimg.com/vi/x/hq720.jpg", 320), "https://i.ytimg.com/vi/x/hq720.jpg");

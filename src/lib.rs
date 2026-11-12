@@ -1335,7 +1335,7 @@ pub(crate) mod tests {
         let fake = Fake::with(vec![ok("library_playlists"), ok("library_albums"), ok("playlist")]);
         let yt = signed_in();
         let lists = ready(yt.library_playlists(&fake)).unwrap();
-        assert_eq!(lists.iter().map(|p| (p.id.as_str(), p.title.as_str())).collect::<Vec<_>>(), [("VLLM", "Liked music"), ("VLOLAK5uy_lNVBcjNtiCwq-n95uoxJ-Gd4vsfMkyZNs", "Top songs")]);
+        assert_eq!(lists.iter().map(|p| (p.id.as_str(), p.title.as_str(), p.song_count)).collect::<Vec<_>>(), [("VLLM", "Liked music", None), ("VLOLAK5uy_lNVBcjNtiCwq-n95uoxJ-Gd4vsfMkyZNs", "Top songs", Some(150))]);
         let albums = ready(yt.library_albums(&fake)).unwrap();
         assert_eq!(albums.iter().map(|a| (a.title.as_str(), a.year, a.artists[0].id.as_str())).collect::<Vec<_>>(), [("Random Access Memories", 2013, "UCRr1xG_2WIDs18a6cIiCxeA"), ("Homework", 1997, "UCRr1xG_2WIDs18a6cIiCxeA")]);
         assert_eq!(ready(yt.liked_songs(&fake)).unwrap().len(), 3);
