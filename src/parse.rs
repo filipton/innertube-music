@@ -410,7 +410,26 @@ fn linked(kind: Leads, browse_id: &str, title: String, thumb: Option<String>, su
 
 /// Every list item in a shelf's `contents` ([`list_item`] says what `labelled` is).
 fn shelf_items(shelf: &Value, labelled: bool) -> impl Iterator<Item = Item> + '_ {
-    shelf.get("contents").and_then(Value::as_array).into_iter().flatten().filter_map(|c| c.get("musicResponsiveListItemRenderer")).filter_map(move |i| list_item(i, labelled))
+    rows(shelf.get("contents"), labelled)
+}
+
+/// The items of a list's `rows`.
+fn rows(rows: Option<&Value>, labelled: bool) -> impl Iterator<Item = Item> + '_ {
+    rows.and_then(Value::as_array).into_iter().flatten().filter_map(|c| c.get("musicResponsiveListItemRenderer")).filter_map(move |i| list_item(i, labelled))
+}
+
+/// The token of the rows after `rows`, which their last names when there are more.
+fn more_rows(rows: Option<&Value>) -> Option<String> {
+    str_at(rows?.as_array()?.last()?, "/continuationItemRenderer/continuationEndpoint/continuationCommand/token").map(str::to_string)
+}
+
+fn songs(items: impl Iterator<Item = Item>) -> Vec<Song> {
+    items
+        .filter_map(|i| match i {
+            Item::Song(s) => Some(s),
+            _ => None,
+        })
+        .collect()
 }
 
 /// An unfiltered search's top result (`musicCardShelfRenderer`): what its title links to, then the
@@ -476,15 +495,11 @@ fn responsive_header(v: &Value) -> Option<&Value> {
 
 /// The songs of a two-column browse page's first shelf named `shelf`.
 fn listed_songs(v: &Value, shelf: &str) -> Vec<Song> {
-    sections(v, "/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents")
-        .filter_map(|s| s.get(shelf))
-        .flat_map(|s| shelf_items(s, false))
-        .filter_map(|i| match i {
-            Item::Song(s) => Some(s),
-            _ => None,
-        })
-        .collect()
+    songs(sections(v, LISTS).filter_map(|s| s.get(shelf)).flat_map(|s| shelf_items(s, false)))
 }
+
+/// Where an album's or a playlist's page keeps its lists.
+const LISTS: &str = "/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents";
 
 /// An album page (`browse` of `MPREb_...`, which is `id`).
 pub(crate) fn album(v: &Value, id: &str) -> AlbumPage {
@@ -632,10 +647,12 @@ fn grid(v: &Value) -> impl Iterator<Item = Item> + '_ {
     items.into_iter().flatten().filter_map(|i| i.get("musicTwoRowItemRenderer")).filter_map(card)
 }
 
-/// A playlist page (`browse` of `VL...`, which is `id`).
-pub(crate) fn playlist(v: &Value, id: &str) -> PlaylistPage {
+/// A playlist's page (`browse` of `VL...`, which is `id`), its first hundred rows, and the token of the
+/// rows after them.
+pub(crate) fn playlist(v: &Value, id: &str) -> (PlaylistPage, Option<String>) {
     let header = responsive_header(v).unwrap_or(&Value::Null);
     let songs = listed_songs(v, "musicPlaylistShelfRenderer");
+    let more = more_rows(sections(v, LISTS).find_map(|s| s.pointer("/musicPlaylistShelfRenderer/contents")));
     let counted = header.get("secondSubtitle").map(runs).and_then(|r| r.first().and_then(|r| r.text.split_whitespace().next()).map(|n| n.replace(',', "")).and_then(|n| n.parse().ok()));
     let playlist = Playlist {
         id: id.to_string(),
@@ -645,7 +662,14 @@ pub(crate) fn playlist(v: &Value, id: &str) -> PlaylistPage {
         song_count: counted,
         thumbnail: header.get("thumbnail").and_then(thumbnail),
     };
-    PlaylistPage { playlist, songs }
+    (PlaylistPage { playlist, songs }, more)
+}
+
+/// A playlist's rows after its first page (`browse` of a continuation): their songs, and the token of
+/// the rows after them.
+pub(crate) fn playlist_more(v: &Value) -> (Vec<Song>, Option<String>) {
+    let list = v.pointer("/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems");
+    (songs(rows(list, false)), more_rows(list))
 }
 
 /// The watch queue returned by `next`, in playback order.
@@ -929,7 +953,7 @@ mod tests {
 
     #[test]
     fn playlist_page() {
-        let p = playlist(&json("playlist"), "VLOLAK5uy_lNVBcjNtiCwq-n95uoxJ-Gd4vsfMkyZNs");
+        let (p, _) = playlist(&json("playlist"), "VLOLAK5uy_lNVBcjNtiCwq-n95uoxJ-Gd4vsfMkyZNs");
         assert_eq!((p.playlist.title.as_str(), p.playlist.song_count), ("Top songs", Some(150)));
         let s = &p.songs[0];
         assert_eq!((s.title.as_str(), s.artist.as_str(), s.duration), ("Instant Crush (feat. Julian Casablancas)", "Daft Punk & Julian Casablancas", 338));

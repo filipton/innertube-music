@@ -110,6 +110,10 @@ const WEB: Client = Client { name: "WEB", version: "2.20260707.01.00", number: "
 /// The most pages of the home feed asked for, each one request: a signed-in feed runs to about eight.
 pub const HOME_PAGES: usize = 10;
 
+/// The most pages of a playlist asked for, each one request of a hundred songs: a playlist holds at most
+/// 5000.
+pub const PLAYLIST_PAGES: usize = 50;
+
 /// The browser a signed-in session's requests say they come from.
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0";
 
@@ -571,9 +575,15 @@ impl InnerTube {
         Ok(page)
     }
 
-    /// Playlist `id` (`VL...`) and its first page of songs.
+    /// Playlist `id` (`VL...`) and its songs, page after page to its end (at most [`PLAYLIST_PAGES`]).
     pub async fn playlist<H: Http + Sync>(&self, http: &H, id: &str) -> Result<PlaylistPage, H::Error> {
-        let mut page = parse::playlist(&self.browse(http, id).await?, id);
+        let (mut page, mut next) = parse::playlist(&self.browse(http, id).await?, id);
+        for _ in 1..PLAYLIST_PAGES {
+            let Some(token) = next.take() else { break };
+            let (more, after) = parse::playlist_more(&self.call(&WEB_REMIX, http, "browse", json!({ "continuation": token })).await?);
+            page.songs.extend(more);
+            next = after;
+        }
         self.fill_lengths(http, &mut page.songs).await;
         Ok(page)
     }
@@ -1161,6 +1171,25 @@ pub(crate) mod tests {
         let asked = fake.asked();
         assert_eq!((asked.len(), body(&asked[2])["videoIds"].clone()), (3, json!(["hHZ4ej144rc", "5F28ye50-Kc", "o_eLrGr6Sqs"])));
         assert!(asked[2].url.contains("/youtubei/v1/music/get_queue?"), "{}", asked[2].url);
+    }
+
+    /// A playlist is its first hundred songs and the rows each continuation names after them, to its end.
+    #[test]
+    fn a_playlist_is_its_pages_to_the_end() {
+        let mut first: Value = serde_json::from_str(&fixture("playlist")).unwrap();
+        let more = |token: &str| json!({ "continuationItemRenderer": { "continuationEndpoint": { "continuationCommand": { "token": token } } } });
+        first["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]["sectionListRenderer"]["contents"][0]["musicPlaylistShelfRenderer"]["contents"].as_array_mut().unwrap().push(more("SECOND"));
+        let mut middle: Value = serde_json::from_str(&fixture("playlist_more")).unwrap();
+        middle["onResponseReceivedActions"][0]["appendContinuationItemsAction"]["continuationItems"].as_array_mut().unwrap().push(more("THIRD"));
+        let answer = |v: Value| Response { status: 200, body: v.to_string().into_bytes(), set_cookies: Vec::new() };
+        let fake = Fake::with(vec![answer(first), answer(middle), ok("playlist_more")]);
+        let page = ready(InnerTube::default().playlist(&fake, "VLx")).unwrap();
+        let ids: Vec<&str> = page.songs.iter().map(|s| s.video_id.as_str()).collect();
+        assert_eq!(ids[3..], ["VWJdjE7VKh4", "nSn-r3FM0NY", "VWJdjE7VKh4", "nSn-r3FM0NY"]);
+        assert_eq!(page.songs[3].title, "Tarara (Remix) (feat. Farruko, Ozuna, Arcangel & Zion)");
+        let asked = fake.asked();
+        assert_eq!((body(&asked[1])["continuation"].as_str(), body(&asked[2])["continuation"].as_str()), (Some("SECOND"), Some("THIRD")));
+        assert!(asked[3..].iter().all(|r| !r.url.contains("/browse")), "the last page names no more");
     }
 
     /// A playlist whose rows all show their lengths costs no more requests; without a queue answer the
