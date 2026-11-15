@@ -42,6 +42,9 @@ pub struct Song {
     pub video: bool,
     /// The account liked it: a signed-in answer's like button on the song says so.
     pub liked: bool,
+    /// Its place in the playlist it was read from, which removing it from there names; None outside a
+    /// playlist.
+    pub set_video_id: Option<String>,
 }
 
 /// Whether `item` plays a music video or an upload rather than a song: the first `musicVideoType` in it
@@ -349,7 +352,8 @@ fn list_item(item: &Value, labelled: bool) -> Option<Item> {
     let video = str_at(item, "/playlistItemData/videoId").or_else(|| cols[0].iter().find_map(|r| r.video));
     if let Some(v) = video {
         let lines: Vec<&[Run]> = cols[1..].iter().enumerate().map(|(i, c)| if labelled && i == 0 { after_first(c) } else { c.as_slice() }).collect();
-        return Some(Item::Song(Song { video: plays_video(item), liked: liked(item), ..song_of(v, title, thumb, live(item), &lines) }));
+        let set_video_id = str_at(item, "/playlistItemData/playlistSetVideoId").map(str::to_string);
+        return Some(Item::Song(Song { video: plays_video(item), liked: liked(item), set_video_id, ..song_of(v, title, thumb, live(item), &lines) }));
     }
     let (b, kind) = browse(item)?;
     let subtitle = cols.get(1).map_or(&[][..], Vec::as_slice);
@@ -961,6 +965,7 @@ mod tests {
         assert_eq!(s.album, Some(AlbumLink { id: "MPREb_K8qWMWVqXGi".into(), name: "Random Access Memories".into() }));
         assert_eq!(p.songs[1].artist, "Daft Punk, Pharrell Williams & Nile Rodgers");
         assert_eq!(p.songs.len(), 3);
+        assert_eq!((s.set_video_id.as_deref(), &p.songs[1].set_video_id), (Some("56B44F6D10557CC6"), &None), "its place, where the playlist names one");
     }
 
     #[test]

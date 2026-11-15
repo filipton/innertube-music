@@ -79,6 +79,8 @@ pub enum Error<E> {
     /// Answered as to a visitor while the cookies could not be rotated (too soon, or an error status):
     /// the session stands, and the next call tries again.
     Refused,
+    /// YouTube answered a change without making it (a playlist that is not the account's); its status.
+    Unchanged(String),
 }
 
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
@@ -106,6 +108,11 @@ const WEB_REMIX: Client = Client { name: "WEB_REMIX", version: "1.20260707.12.00
 
 /// youtube.com's web client: only its channel switcher lists the account's channels, all of them.
 const WEB: Client = Client { name: "WEB", version: "2.20260707.01.00", number: "1", host: "www.youtube.com", user_agent: None, device: &[], signs_in: true, as_channel: false };
+
+/// A playlist's id as its changes name it: its browse id without the `VL`.
+fn listed(id: &str) -> &str {
+    id.strip_prefix("VL").unwrap_or(id)
+}
 
 /// The most pages of the home feed asked for, each one request: a signed-in feed runs to about eight.
 pub const HOME_PAGES: usize = 10;
@@ -690,6 +697,57 @@ impl InnerTube {
         }
         let endpoint = if on { "like/like" } else { "like/removelike" };
         self.call(&WEB_REMIX, http, endpoint, json!({ "target": { "videoId": video } })).await.map(|_| ())
+    }
+
+    /// Makes a private playlist named `title` holding `videos`; its id (`VL...`).
+    pub async fn create_playlist<H: Http + Sync>(&self, http: &H, title: &str, videos: &[String]) -> Result<String, H::Error> {
+        self.account()?;
+        let answer = self.call(&WEB_REMIX, http, "playlist/create", json!({ "title": title, "privacyStatus": "PRIVATE", "videoIds": videos })).await?;
+        let id = answer.get("playlistId").and_then(Value::as_str).ok_or_else(|| Error::Parse("no playlist id in the answer".into()))?;
+        Ok(format!("VL{id}"))
+    }
+
+    /// Adds `videos` to the end of playlist `id` (`VL...`), those already in it too.
+    pub async fn add_to_playlist<H: Http + Sync>(&self, http: &H, id: &str, videos: &[String]) -> Result<(), H::Error> {
+        let adds = videos.iter().map(|v| json!({ "action": "ACTION_ADD_VIDEO", "addedVideoId": v, "dedupeOption": "DEDUPE_OPTION_SKIP" })).collect();
+        self.edit_playlist(http, id, adds).await
+    }
+
+    /// Takes `song` out of playlist `id` (`VL...`): one read from that playlist, which names its place
+    /// ([`Song::set_video_id`]).
+    pub async fn remove_from_playlist<H: Http + Sync>(&self, http: &H, id: &str, song: &Song) -> Result<(), H::Error> {
+        let place = song.set_video_id.as_deref().ok_or_else(|| Error::Parse("the song names no place in the playlist".into()))?;
+        self.edit_playlist(http, id, vec![json!({ "action": "ACTION_REMOVE_VIDEO", "setVideoId": place, "removedVideoId": song.video_id })]).await
+    }
+
+    /// Names playlist `id` (`VL...`) `title`.
+    pub async fn rename_playlist<H: Http + Sync>(&self, http: &H, id: &str, title: &str) -> Result<(), H::Error> {
+        self.edit_playlist(http, id, vec![json!({ "action": "ACTION_SET_PLAYLIST_NAME", "playlistName": title })]).await
+    }
+
+    /// Deletes playlist `id` (`VL...`), one of the account's own.
+    pub async fn delete_playlist<H: Http + Sync>(&self, http: &H, id: &str) -> Result<(), H::Error> {
+        self.account()?;
+        self.call(&WEB_REMIX, http, "playlist/delete", json!({ "playlistId": listed(id) })).await.map(|_| ())
+    }
+
+    /// `actions` done to playlist `id`; one YouTube does not do (a playlist that is not the account's)
+    /// is [`Error::Unchanged`].
+    async fn edit_playlist<H: Http + Sync>(&self, http: &H, id: &str, actions: Vec<Value>) -> Result<(), H::Error> {
+        self.account()?;
+        let answer = self.call(&WEB_REMIX, http, "browse/edit_playlist", json!({ "playlistId": listed(id), "actions": actions })).await?;
+        match answer.get("status").and_then(Value::as_str) {
+            Some("STATUS_SUCCEEDED") => Ok(()),
+            status => Err(Error::Unchanged(status.unwrap_or_default().to_string())),
+        }
+    }
+
+    /// An account's call: signed out, it is not sent.
+    fn account<E>(&self) -> Result<(), E> {
+        if self.cookies().is_none() {
+            return Err(Error::SignedOut);
+        }
+        Ok(())
     }
 
     /// Adds `video` to the account's history, as YouTube Music's own player does when a song plays: the
@@ -1336,6 +1394,41 @@ pub(crate) mod tests {
         let asked = fake.asked();
         assert!(asked[0].url.contains("/like/like?") && asked[1].url.contains("/like/removelike?"));
         assert_eq!(body(&asked[0])["target"]["videoId"], "v1");
+    }
+
+    /// A playlist's changes name it without its `VL`: made private with its songs, added to (a song
+    /// already in it too), a song taken out by its place, named, deleted. One YouTube leaves as it was
+    /// fails; signed out, nothing is asked.
+    #[test]
+    fn playlists_are_made_and_changed() {
+        let yt = signed_in();
+        let done = r#"{"status":"STATUS_SUCCEEDED"}"#;
+        let fake = Fake::answering(&[(200, r#"{"playlistId":"PL1"}"#), (200, done), (200, done), (200, done), (200, "{}"), (200, r#"{"status":"STATUS_FAILED"}"#)]);
+        assert_eq!(ready(yt.create_playlist(&fake, "Mine", &["v1".into()])).unwrap(), "VLPL1");
+        ready(yt.add_to_playlist(&fake, "VLPL1", &["v2".into(), "v3".into()])).unwrap();
+        let song = Song { video_id: "v2".into(), set_video_id: Some("place2".into()), ..Default::default() };
+        ready(yt.remove_from_playlist(&fake, "VLPL1", &song)).unwrap();
+        ready(yt.rename_playlist(&fake, "VLPL1", "Ours")).unwrap();
+        ready(yt.delete_playlist(&fake, "VLPL1")).unwrap();
+        assert_eq!(ready(yt.rename_playlist(&fake, "VLPL2", "Theirs")), Err(Error::Unchanged("STATUS_FAILED".into())));
+        let asked = fake.asked();
+        let paths: Vec<&str> = asked.iter().map(|r| r.url.split("/youtubei/v1/").nth(1).unwrap().split('?').next().unwrap()).collect();
+        assert_eq!(paths, ["playlist/create", "browse/edit_playlist", "browse/edit_playlist", "browse/edit_playlist", "playlist/delete", "browse/edit_playlist"]);
+        assert_eq!(body(&asked[0])["title"], "Mine");
+        assert_eq!((&body(&asked[0])["privacyStatus"], &body(&asked[0])["videoIds"]), (&json!("PRIVATE"), &json!(["v1"])));
+        assert_eq!(body(&asked[1])["playlistId"], "PL1");
+        assert_eq!(body(&asked[1])["actions"], json!([
+            { "action": "ACTION_ADD_VIDEO", "addedVideoId": "v2", "dedupeOption": "DEDUPE_OPTION_SKIP" },
+            { "action": "ACTION_ADD_VIDEO", "addedVideoId": "v3", "dedupeOption": "DEDUPE_OPTION_SKIP" },
+        ]));
+        assert_eq!(body(&asked[2])["actions"], json!([{ "action": "ACTION_REMOVE_VIDEO", "setVideoId": "place2", "removedVideoId": "v2" }]));
+        assert_eq!(body(&asked[3])["actions"], json!([{ "action": "ACTION_SET_PLAYLIST_NAME", "playlistName": "Ours" }]));
+        assert_eq!(body(&asked[4])["playlistId"], "PL1");
+
+        let fake = Fake::answering(&[]);
+        assert_eq!(ready(InnerTube::default().create_playlist(&fake, "Mine", &[])), Err(Error::SignedOut));
+        assert_eq!(ready(yt.remove_from_playlist(&fake, "VLPL1", &Song::default())), Err(Error::Parse("the song names no place in the playlist".into())));
+        assert!(fake.asked().is_empty());
     }
 
     /// A play goes into the account's history: the web player's stats address, asked with the cookies and

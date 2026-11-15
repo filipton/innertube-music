@@ -52,7 +52,8 @@ put the range in the URL (`&range=0-{length - 1}`), which comes at full speed up
 reads a `Cookie` header or a cookies.txt). Signed-in requests to music.youtube.com carry them with a
 `SAPISIDHASH` authorization; the stream client never does. Then `home` is the account's own,
 and `library_playlists`, `library_albums`, `library_artists`, `library_songs`, `liked_songs` and `like`
-work.
+work, and so do the account's playlists: `create_playlist`, `add_to_playlist`, `remove_from_playlist`
+(a song read from that playlist names its place in it), `rename_playlist` and `delete_playlist`.
 
 A Google account can have more than one channel, each with its own library. `channels` lists them
 (youtube.com's channel switcher), and `set_channel` with one's `page_id` serves the session's
