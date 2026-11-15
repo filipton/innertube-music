@@ -110,6 +110,8 @@ pub struct Playlist {
     /// Songs in it as its header counts them; None when it does not say.
     pub song_count: Option<u32>,
     pub thumbnail: Option<String>,
+    /// One of the account's own, which it can change: its page says so, a card in a list does not.
+    pub own: bool,
 }
 
 /// One of the Google account's channels, as YouTube's channel switcher lists them.
@@ -492,10 +494,14 @@ pub(crate) fn search(v: &Value) -> SearchResults {
     found
 }
 
-/// The header of a two-column browse page (album, playlist).
+/// The header of a two-column browse page (album, playlist); one of the account's own playlists wraps
+/// it in the header its page edits it with.
 fn responsive_header(v: &Value) -> Option<&Value> {
-    sections(v, "/contents/twoColumnBrowseResultsRenderer/tabs/0/tabRenderer/content/sectionListRenderer/contents").find_map(|s| s.get("musicResponsiveHeaderRenderer"))
+    sections(v, HEADERS).find_map(|s| s.get("musicResponsiveHeaderRenderer").or_else(|| s.pointer("/musicEditablePlaylistDetailHeaderRenderer/header/musicResponsiveHeaderRenderer")))
 }
+
+/// Where an album's or a playlist's page keeps its header.
+const HEADERS: &str = "/contents/twoColumnBrowseResultsRenderer/tabs/0/tabRenderer/content/sectionListRenderer/contents";
 
 /// The songs of a two-column browse page's first shelf named `shelf`.
 fn listed_songs(v: &Value, shelf: &str) -> Vec<Song> {
@@ -665,6 +671,7 @@ pub(crate) fn playlist(v: &Value, id: &str) -> (PlaylistPage, Option<String>) {
         author: header.get("straplineTextOne").map(|t| joined(&runs(t))).filter(|o| !o.is_empty()),
         song_count: counted,
         thumbnail: header.get("thumbnail").and_then(thumbnail),
+        own: sections(v, HEADERS).any(|s| s.get("musicEditablePlaylistDetailHeaderRenderer").is_some()),
     };
     (PlaylistPage { playlist, songs }, more)
 }
@@ -966,6 +973,18 @@ mod tests {
         assert_eq!(p.songs[1].artist, "Daft Punk, Pharrell Williams & Nile Rodgers");
         assert_eq!(p.songs.len(), 3);
         assert_eq!((s.set_video_id.as_deref(), &p.songs[1].set_video_id), (Some("56B44F6D10557CC6"), &None), "its place, where the playlist names one");
+    }
+
+    /// One of the account's own playlists keeps its header inside the one its page edits it with.
+    #[test]
+    fn an_own_playlist_is_titled() {
+        let mut v = json("playlist");
+        assert!(!playlist(&v, "VLx").0.playlist.own);
+        let sections = v.pointer_mut(HEADERS).unwrap();
+        let header = sections[0]["musicResponsiveHeaderRenderer"].take();
+        sections[0] = serde_json::json!({ "musicEditablePlaylistDetailHeaderRenderer": { "header": { "musicResponsiveHeaderRenderer": header } } });
+        let own = playlist(&v, "VLx").0.playlist;
+        assert_eq!((own.title.as_str(), own.own), ("Top songs", true));
     }
 
     #[test]
