@@ -442,7 +442,12 @@ impl InnerTube {
         let cookies = self.cookies().ok_or(Error::SignedOut)?;
         let request = Request {
             url: ROTATE_URL.into(),
-            headers: vec![("Origin".into(), "https://accounts.youtube.com".into()), ("Cookie".into(), cookies.header()), ("User-Agent".into(), BROWSER_UA.into())],
+            headers: vec![
+                ("Origin".into(), "https://accounts.youtube.com".into()),
+                ("Content-Type".into(), "application/json".into()),
+                ("Cookie".into(), cookies.header()),
+                ("User-Agent".into(), BROWSER_UA.into()),
+            ],
             body: Some(ROTATE_BODY.into()),
         };
         let r = http.send(request).await.map_err(Error::Transport)?;
@@ -1333,6 +1338,7 @@ pub(crate) mod tests {
         assert_eq!(ready(yt.rotate(&fake)), Ok(Rotated::Fresh));
         let r = &fake.asked()[0];
         assert_eq!((r.url.as_str(), r.body.as_deref(), r.header("Origin")), (ROTATE_URL, Some(ROTATE_BODY), Some("https://accounts.youtube.com")));
+        assert_eq!(r.header("Content-Type"), Some("application/json"), "YouTube answers 500 to a rotation without it");
         assert_eq!(r.header("Cookie"), Some(SESSION));
         assert_eq!(yt.take_changed().unwrap().get("__Secure-1PSIDTS"), Some("ts2"));
         assert_eq!(yt.take_changed(), None, "taken once");
