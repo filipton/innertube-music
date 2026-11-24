@@ -7,7 +7,10 @@ YouTube Music over InnerTube, in Rust, without a JavaScript engine:
 
 The crate does no I/O. It builds requests and parses answers into plain records (`Song`, `Album`,
 `Artist`, `Playlist`, `Stream`) that keep YouTube's own ids. You bring the HTTP client by implementing
-the `Http` trait, on any async runtime; its only dependency is `serde_json`.
+the `Http` trait, on any async runtime; its only dependency is `serde_json`. Some calls ask several
+requests side by side (a search asks four; an album asks a search for each track YouTube lists as its
+music video), so a blocking client behind ready futures sends them one after another: a deluxe
+album then took 8.8 s instead of 1.6 s.
 
 ```rust
 use innertube_music::{Http, InnerTube, Request, Response};
