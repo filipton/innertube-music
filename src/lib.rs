@@ -86,6 +86,7 @@ pub enum Error<E> {
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
 
 /// One InnerTube client as YouTube knows it.
+#[derive(Clone, Copy)]
 struct Client {
     name: &'static str,
     version: &'static str,
@@ -101,13 +102,15 @@ struct Client {
     signs_in: bool,
     /// Signed in, served as the channel chosen ([`InnerTube::set_channel`]).
     as_channel: bool,
+    /// The fields its answers are to hold (`X-Goog-FieldMask`); None: all of them.
+    fields: Option<&'static str>,
 }
 
 /// music.youtube.com's web client (yt-dlp `web_music`): search, browse and the account.
-const WEB_REMIX: Client = Client { name: "WEB_REMIX", version: "1.20260707.12.00", number: "67", host: "music.youtube.com", user_agent: None, device: &[], signs_in: true, as_channel: true };
+const WEB_REMIX: Client = Client { name: "WEB_REMIX", version: "1.20260707.12.00", number: "67", host: "music.youtube.com", user_agent: None, device: &[], signs_in: true, as_channel: true, fields: None };
 
 /// youtube.com's web client: only its channel switcher lists the account's channels, all of them.
-const WEB: Client = Client { name: "WEB", version: "2.20260707.01.00", number: "1", host: "www.youtube.com", user_agent: None, device: &[], signs_in: true, as_channel: false };
+const WEB: Client = Client { name: "WEB", version: "2.20260707.01.00", number: "1", host: "www.youtube.com", user_agent: None, device: &[], signs_in: true, as_channel: false, fields: None };
 
 /// A playlist's id as its changes name it: its browse id without the `VL`.
 fn listed(id: &str) -> &str {
@@ -127,12 +130,16 @@ const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Ge
 const VISIONOS_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 const VISIONOS_DEVICE: &[(&str, &str)] = &[("deviceMake", "Apple"), ("deviceModel", "RealityDevice17,1"), ("osName", "visionOS"), ("osVersion", "26.5.23O471")];
 
+/// The fields of a player answer [`player::stream`] reads, and the visitor id: about a third of the
+/// answer (26 of 61 KB on 2026-11-24). YouTube refuses an unknown field with 400.
+const PLAYER_FIELDS: &str = "responseContext(visitorData),playabilityStatus(status,reason),streamingData(adaptiveFormats(itag,url,mimeType,bitrate,contentLength),expiresInSeconds)";
+
 /// The visionOS builds asked for streams, in order (yt-dlp `visionos` is 1.02; 1.03 and 1.01 are its
 /// siblings that zemer-app found serving whole songs when 0.1 was retired on 2026-10-07).
 const VISIONOS: [Client; 3] = [
-    Client { name: "VISIONOS", version: "1.02", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false },
-    Client { name: "VISIONOS", version: "1.03", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false },
-    Client { name: "VISIONOS", version: "1.01", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false },
+    Client { name: "VISIONOS", version: "1.02", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false, fields: Some(PLAYER_FIELDS) },
+    Client { name: "VISIONOS", version: "1.03", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false, fields: Some(PLAYER_FIELDS) },
+    Client { name: "VISIONOS", version: "1.01", number: "101", host: "www.youtube.com", user_agent: Some(VISIONOS_UA), device: VISIONOS_DEVICE, signs_in: false, as_channel: false, fields: Some(PLAYER_FIELDS) },
 ];
 
 /// Where a youtube.com session's cookies are rotated, and the body it expects.
@@ -188,6 +195,9 @@ impl Client {
         }
         if let Some(v) = visitor {
             headers.push(("X-Goog-Visitor-Id".into(), v.into()));
+        }
+        if let Some(f) = self.fields {
+            headers.push(("X-Goog-FieldMask".into(), f.into()));
         }
         if let Some(c) = cookies {
             if let Some(a) = auth::authorization(c, &origin, unix_now()) {
@@ -779,12 +789,15 @@ impl InnerTube {
     }
 
     /// The stream to play `video` from: the first visionOS build YouTube still serves, and its best
-    /// audio ([`pick`]). Refused for want of a visitor id, it is asked once more with the one the
-    /// refusal gave. Never signed in.
+    /// audio ([`pick`]). Each build is asked for [`PLAYER_FIELDS`] only, then, refused, for its whole
+    /// answer: a field YouTube no longer knows would refuse the masked request like a retired build.
+    /// Refused for want of a visitor id, it is asked once more with the one the refusal gave. Never
+    /// signed in.
     pub async fn player<H: Http + Sync>(&self, http: &H, video: &str) -> Result<Stream, H::Error> {
         let fields = json!({ "videoId": video, "contentCheckOk": true, "racyCheckOk": true });
         let mut last = Error::Status(404);
-        for client in &VISIONOS {
+        for client in VISIONOS.iter().flat_map(|c| [*c, Client { fields: None, ..*c }]) {
+            let client = &client;
             let visitor_known = self.visitor().is_some();
             let answer = match self.call(client, http, "player", fields.clone()).await {
                 Err(Error::Status(status)) if retired(status) => {
@@ -947,22 +960,37 @@ pub(crate) mod tests {
         assert_eq!(r.header("User-Agent"), Some(VISIONOS_UA));
     }
 
-    /// A build YouTube retired (400, 404) gives way to the next; any other failure is the answer.
+    /// A build YouTube retired (400, 404), asked with and without the field mask, gives way to the next;
+    /// any other failure is the answer.
     #[test]
     fn a_retired_visionos_build_gives_way_to_the_next() {
         let player = |fake: &Fake| ready(InnerTube::default().player(fake, "v"));
-        let fake = Fake::answering(&[(400, "{}"), (200, &fixture("player"))]);
+        let fake = Fake::answering(&[(400, "{}"), (400, "{}"), (200, &fixture("player"))]);
         assert!(player(&fake).is_ok());
-        let versions: Vec<String> = fake.asked().iter().map(|r| r.header("X-YouTube-Client-Version").unwrap().to_string()).collect();
-        assert_eq!(versions, ["1.02", "1.03"]);
+        let asked: Vec<(String, bool)> = fake.asked().iter().map(|r| (r.header("X-YouTube-Client-Version").unwrap().to_string(), r.header("X-Goog-FieldMask").is_some())).collect();
+        assert_eq!(asked, [("1.02".into(), true), ("1.02".into(), false), ("1.03".into(), true)]);
 
-        let fake = Fake::answering(&[(404, ""), (400, ""), (400, "")]);
+        let fake = Fake::answering(&[(404, ""), (404, ""), (400, ""), (400, ""), (400, ""), (400, "")]);
         assert_eq!(player(&fake), Err(Error::Status(400)));
-        assert_eq!(fake.asked().len(), 3);
+        assert_eq!(fake.asked().len(), 6);
 
         let fake = Fake::answering(&[(429, "")]);
         assert_eq!(player(&fake), Err(Error::Status(429)), "a rate limit is not retried");
         assert_eq!(fake.asked().len(), 1);
+    }
+
+    /// The player is asked only for the fields it reads; refused (a field YouTube no longer knows), the
+    /// same build is asked for its whole answer.
+    #[test]
+    fn the_player_asks_for_the_fields_it_reads() {
+        let fake = Fake::answering(&[(400, "{}"), (200, &fixture("player"))]);
+        assert_eq!(ready(InnerTube::default().player(&fake, "v")).unwrap().format.itag, 251);
+        let asked = fake.asked();
+        assert_eq!(asked[0].header("X-Goog-FieldMask"), Some(PLAYER_FIELDS));
+        assert_eq!((asked[1].header("X-Goog-FieldMask"), asked[1].header("X-YouTube-Client-Version")), (None, Some("1.02")));
+        let search = Fake::answering(&[(200, "{}"); 4]);
+        let _ = ready(InnerTube::default().search(&search, "q"));
+        assert!(search.asked().iter().all(|r| r.header("X-Goog-FieldMask").is_none()), "music.youtube.com answers whole");
     }
 
     /// The first answer's visitor id goes with every later request; a player refusal for want of one is
