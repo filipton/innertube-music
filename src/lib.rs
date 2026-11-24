@@ -1312,7 +1312,7 @@ pub(crate) mod tests {
     }
 
     /// The channel switcher lists the account's channels from youtube.com, signed for it; only one
-    /// that is not the account's own has a page id.
+    /// that is not the account's own has a page id, and each names the account.
     #[test]
     fn the_accounts_channels_are_listed() {
         let yt = signed_in();
@@ -1321,6 +1321,8 @@ pub(crate) mod tests {
         let shown: Vec<_> = found.iter().map(|c| (c.name.as_str(), c.handle.as_deref(), c.selected, c.page_id.as_deref())).collect();
         assert_eq!(shown, [("Ada", Some("@ada"), true, None), ("Ada's covers", Some("@adacovers"), false, Some("100000000000000000001"))]);
         assert_eq!(found[1].thumbnail.as_deref(), Some("https://yt3.ggpht.com/covers"));
+        let accounts: Vec<_> = found.iter().map(|c| c.account_id.as_deref()).collect();
+        assert_eq!(accounts, [Some("100000000000000000002"), Some("100000000000000000002")]);
         let r = &fake.asked()[0];
         assert!(r.url.starts_with("https://www.youtube.com/youtubei/v1/account/accounts_list"), "{}", r.url);
         assert_eq!((r.header("X-Origin"), body(r)["context"]["client"]["clientName"].as_str()), (Some("https://www.youtube.com"), Some("WEB")));

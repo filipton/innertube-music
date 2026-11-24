@@ -126,6 +126,10 @@ pub struct Channel {
     /// What a request names to be served as this channel ([`crate::InnerTube::set_channel`]); None for the
     /// account's own channel, which is served when none is named.
     pub page_id: Option<String>,
+    /// The Google account's id: the same for each of its channels, wherever it signs in, and for as long as
+    /// the account lives. The account's part of the channel's data sync id, which is `<page id>||<account
+    /// id>` for a channel the account manages and `<account id>||` for its own.
+    pub account_id: Option<String>,
 }
 
 /// Songs, albums, artists and playlists of a search, in YouTube's order.
@@ -794,12 +798,15 @@ pub(crate) fn channels(v: &Value) -> Vec<Channel> {
     contents.into_iter().flatten().filter_map(|c| c.get("accountItemRenderer")).filter_map(|item| {
         let tokens = item.pointer("/serviceEndpoint/selectActiveIdentityEndpoint/supportedTokens").and_then(Value::as_array);
         let page_id = tokens.into_iter().flatten().find_map(|t| str_at(t, "/pageIdToken/pageId")).map(str::to_string);
+        let datasync = tokens.into_iter().flatten().find_map(|t| str_at(t, "/datasyncIdToken/datasyncIdToken"));
+        let account_id = datasync.and_then(|d| d.split_once("||")).map(|(first, account)| if account.is_empty() { first } else { account }).filter(|a| !a.is_empty()).map(str::to_string);
         Some(Channel {
             name: words(item.get("accountName")?)?,
             handle: item.get("channelHandle").and_then(words),
             thumbnail: item.get("accountPhoto").and_then(thumbnail),
             selected: item.get("isSelected").and_then(Value::as_bool).unwrap_or(false),
             page_id,
+            account_id,
         })
     }).collect()
 }
