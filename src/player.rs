@@ -30,6 +30,9 @@ impl Format {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stream {
     pub format: Format,
+    /// Every plain audio format of the video, `format` among them, for a player that cannot play it
+    /// (Opus in WebM).
+    pub formats: Vec<Format>,
     pub expires_in: Duration,
 }
 
@@ -87,7 +90,7 @@ pub(crate) fn stream(v: &Value) -> Result<Stream, NoStream> {
         .collect();
     let format = pick(&formats).cloned().ok_or(NoStream::NoAudio)?;
     let expires_in = v.pointer("/streamingData/expiresInSeconds").and_then(Value::as_str).and_then(|s| s.parse().ok()).map_or(USUAL_EXPIRY, Duration::from_secs);
-    Ok(Stream { format, expires_in })
+    Ok(Stream { format, formats, expires_in })
 }
 
 #[cfg(test)]
@@ -109,6 +112,16 @@ mod tests {
         assert_eq!((s.format.itag, s.format.length, s.expires_in), (251, Some(3_433_755), Duration::from_secs(21_540)));
         assert!(s.format.url.starts_with("https://rr1---sn-fixture.googlevideo.com/videoplayback?") && s.format.url.contains("itag=251"));
         assert!(s.format.opus());
+    }
+
+    /// Every plain audio format is listed beside the pick: AAC for a player without Opus.
+    #[test]
+    fn a_stream_lists_every_plain_audio_format() {
+        let s = stream(&answer("player")).unwrap();
+        let itags: Vec<u32> = s.formats.iter().map(|f| f.itag).collect();
+        assert!(itags.contains(&140) && itags.contains(&251), "{itags:?}");
+        assert!(s.formats.iter().all(|f| f.mime.starts_with("audio/")));
+        assert!(s.formats.contains(&s.format));
     }
 
     #[test]

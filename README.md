@@ -41,6 +41,9 @@ it back with `set_visitor` in the next session: a new visitor is served a differ
 `InnerTube::radio` returns the song's watch queue as metadata. It does not resolve or fetch audio;
 call `player` for a track only when the user asks to play or download it.
 
+`Stream::format` is the pick (Opus 160 kbps where there is one); `Stream::formats` lists every plain
+audio format of the video, for a player that cannot play Opus in WebM (AAC in MP4 is itag 140).
+
 Stream URLs are bound to the requesting IP address and expire after `Stream::expires_in`. Ask for at
 most `PART` (10 MiB) per request, with a `Range` header that has an end: YouTube sends a longer range, or
 one without an end, at about the speed it plays. A requester that must ask for the whole file at once can
