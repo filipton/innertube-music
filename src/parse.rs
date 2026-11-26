@@ -543,6 +543,13 @@ pub(crate) fn album(v: &Value, id: &str) -> AlbumPage {
     AlbumPage { album, songs }
 }
 
+/// The playlist an album page's Play button plays (`OLAK5uy_...`): the album's songs as songs, where the
+/// page may list some as their music videos.
+pub(crate) fn album_playlist(v: &Value) -> Option<&str> {
+    let buttons = responsive_header(v)?.get("buttons")?.as_array()?;
+    buttons.iter().find_map(|b| b.pointer("/musicPlayButtonRenderer/playNavigationEndpoint/watchPlaylistEndpoint/playlistId")).and_then(Value::as_str)
+}
+
 /// Where an artist page's shelves are.
 const ARTIST_SHELVES: &str = "/contents/singleColumnBrowseResultsRenderer/tabs/0/tabRenderer/content/sectionListRenderer/contents";
 
