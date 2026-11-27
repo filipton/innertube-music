@@ -15,6 +15,9 @@ requests together, not as long as the slowest.
 An album whose page lists some tracks as their music videos asks one more request, its own playlist,
 whose songs replace those videos.
 
+A playlist comes a hundred songs per request, one page after another. `playlist_in_parts` hands over its
+first page while the rest are asked, so a long playlist can be shown at once.
+
 ```rust
 use innertube_music::{Http, InnerTube, Request, Response};
 

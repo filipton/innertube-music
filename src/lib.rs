@@ -595,7 +595,17 @@ impl InnerTube {
 
     /// Playlist `id` (`VL...`) and its songs, page after page to its end (at most [`PLAYLIST_PAGES`]).
     pub async fn playlist<H: Http + Sync>(&self, http: &H, id: &str) -> Result<PlaylistPage, H::Error> {
+        self.playlist_in_parts(http, id, |_| {}).await
+    }
+
+    /// [`InnerTube::playlist`], handing `first` its first page while the pages after it are asked, so a
+    /// long playlist can be shown before it all comes: its pages come one after another, each a request.
+    /// A playlist of one page comes whole, without `first`.
+    pub async fn playlist_in_parts<H: Http + Sync>(&self, http: &H, id: &str, first: impl FnOnce(&PlaylistPage)) -> Result<PlaylistPage, H::Error> {
         let (mut page, mut next) = parse::playlist(&self.browse(http, id).await?, id);
+        if next.is_some() {
+            first(&page);
+        }
         for _ in 1..PLAYLIST_PAGES {
             let Some(token) = next.take() else { break };
             let (more, after) = parse::playlist_more(&self.call(&WEB_REMIX, http, "browse", json!({ "continuation": token })).await?);
@@ -1282,6 +1292,25 @@ pub(crate) mod tests {
         let asked = fake.asked();
         assert_eq!((body(&asked[1])["continuation"].as_str(), body(&asked[2])["continuation"].as_str()), (Some("SECOND"), Some("THIRD")));
         assert!(asked[3..].iter().all(|r| !r.url.contains("/browse")), "the last page names no more");
+    }
+
+    /// A long playlist hands over its first page before the next is asked; one of a single page comes
+    /// whole.
+    #[test]
+    fn a_long_playlists_first_page_comes_first() {
+        let mut first: Value = serde_json::from_str(&fixture("playlist")).unwrap();
+        let more = json!({ "continuationItemRenderer": { "continuationEndpoint": { "continuationCommand": { "token": "SECOND" } } } });
+        first["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]["sectionListRenderer"]["contents"][0]["musicPlaylistShelfRenderer"]["contents"].as_array_mut().unwrap().push(more);
+        let fake = Fake::with(vec![Response { status: 200, body: first.to_string().into_bytes(), set_cookies: Vec::new() }, ok("playlist_more")]);
+        let mut shown = None;
+        let whole = ready(InnerTube::default().playlist_in_parts(&fake, "VLx", |p| shown = Some((p.songs.len(), fake.asked().len())))).unwrap();
+        let (songs, asked) = shown.expect("the first page was handed over");
+        assert_eq!(asked, 1, "before the second page was asked");
+        assert!(songs > 0 && songs < whole.songs.len(), "{songs} of {}", whole.songs.len());
+        let fake = Fake::with(vec![ok("playlist")]);
+        let mut called = false;
+        ready(InnerTube::default().playlist_in_parts(&fake, "VLx", |_| called = true)).unwrap();
+        assert!(!called, "one page comes whole");
     }
 
     /// A playlist whose rows all show their lengths costs no more requests; without a queue answer the
