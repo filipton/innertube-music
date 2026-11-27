@@ -598,16 +598,14 @@ impl InnerTube {
         self.playlist_in_parts(http, id, |_| {}).await
     }
 
-    /// [`InnerTube::playlist`], handing `first` its first page while the pages after it are asked, so a
-    /// long playlist can be shown before it all comes: its pages come one after another, each a request.
-    /// A playlist of one page comes whole, without `first`.
-    pub async fn playlist_in_parts<H: Http + Sync>(&self, http: &H, id: &str, first: impl FnOnce(&PlaylistPage)) -> Result<PlaylistPage, H::Error> {
+    /// [`InnerTube::playlist`], handing `part` the playlist as far as it came each time another page is
+    /// asked, so a long playlist can be shown before it all comes: its pages come one after another, each a
+    /// request. A playlist of one page comes whole, without `part`.
+    pub async fn playlist_in_parts<H: Http + Sync>(&self, http: &H, id: &str, mut part: impl FnMut(&PlaylistPage)) -> Result<PlaylistPage, H::Error> {
         let (mut page, mut next) = parse::playlist(&self.browse(http, id).await?, id);
-        if next.is_some() {
-            first(&page);
-        }
         for _ in 1..PLAYLIST_PAGES {
             let Some(token) = next.take() else { break };
+            part(&page);
             let (more, after) = parse::playlist_more(&self.call(&WEB_REMIX, http, "browse", json!({ "continuation": token })).await?);
             page.songs.extend(more);
             next = after;
@@ -1294,19 +1292,25 @@ pub(crate) mod tests {
         assert!(asked[3..].iter().all(|r| !r.url.contains("/browse")), "the last page names no more");
     }
 
-    /// A long playlist hands over its first page before the next is asked; one of a single page comes
+    /// A long playlist hands over what came before each next page is asked; one of a single page comes
     /// whole.
     #[test]
-    fn a_long_playlists_first_page_comes_first() {
-        let mut first: Value = serde_json::from_str(&fixture("playlist")).unwrap();
-        let more = json!({ "continuationItemRenderer": { "continuationEndpoint": { "continuationCommand": { "token": "SECOND" } } } });
-        first["contents"]["twoColumnBrowseResultsRenderer"]["secondaryContents"]["sectionListRenderer"]["contents"][0]["musicPlaylistShelfRenderer"]["contents"].as_array_mut().unwrap().push(more);
-        let fake = Fake::with(vec![Response { status: 200, body: first.to_string().into_bytes(), set_cookies: Vec::new() }, ok("playlist_more")]);
-        let mut shown = None;
-        let whole = ready(InnerTube::default().playlist_in_parts(&fake, "VLx", |p| shown = Some((p.songs.len(), fake.asked().len())))).unwrap();
-        let (songs, asked) = shown.expect("the first page was handed over");
-        assert_eq!(asked, 1, "before the second page was asked");
-        assert!(songs > 0 && songs < whole.songs.len(), "{songs} of {}", whole.songs.len());
+    fn a_long_playlist_comes_page_by_page() {
+        // `name`'s songs at `list`, and a next page after them.
+        let continued = |name: &str, list: &str, token: &str| {
+            let mut v: Value = serde_json::from_str(&fixture(name)).unwrap();
+            let more = json!({ "continuationItemRenderer": { "continuationEndpoint": { "continuationCommand": { "token": token } } } });
+            v.pointer_mut(list).unwrap().as_array_mut().unwrap().push(more);
+            Response { status: 200, body: v.to_string().into_bytes(), set_cookies: Vec::new() }
+        };
+        let first = continued("playlist", "/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents", "SECOND");
+        let second = continued("playlist_more", "/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems", "THIRD");
+        let fake = Fake::with(vec![first, second, ok("playlist_more")]);
+        let mut shown = Vec::new();
+        let whole = ready(InnerTube::default().playlist_in_parts(&fake, "VLx", |p| shown.push((p.songs.len(), fake.asked().len())))).unwrap();
+        let [(one, asked_one), (two, asked_two)] = shown[..] else { panic!("{shown:?}") };
+        assert_eq!((asked_one, asked_two), (1, 2), "each before the next page was asked");
+        assert!(0 < one && one < two && two < whole.songs.len(), "{one}, {two} of {}", whole.songs.len());
         let fake = Fake::with(vec![ok("playlist")]);
         let mut called = false;
         ready(InnerTube::default().playlist_in_parts(&fake, "VLx", |_| called = true)).unwrap();
